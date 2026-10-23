@@ -1,5 +1,26 @@
 """IntegrityGuard file integrity monitoring tools."""
 
+from integrityguard.baseline import (
+    HASH_ALGORITHM,
+    MAX_BASELINE_BYTES,
+    SCHEMA_VERSION,
+    Baseline,
+    BaselineError,
+    BaselineExistsError,
+    BaselineFile,
+    BaselineIOError,
+    IncompleteScanError,
+    InvalidBaselineError,
+    UnsupportedBaselineVersionError,
+    UnsafeBaselinePathError,
+    baseline_to_json,
+    check_baseline_compatibility,
+    create_baseline,
+    is_baseline_compatible,
+    load_baseline,
+    save_baseline,
+    validate_baseline_data,
+)
 from integrityguard.hashing import DEFAULT_CHUNK_SIZE, sha256_file
 from integrityguard.scanner import (
     FileScanResult,
@@ -11,13 +32,32 @@ from integrityguard.scanner import (
 )
 
 __all__ = [
+    "HASH_ALGORITHM",
+    "MAX_BASELINE_BYTES",
+    "SCHEMA_VERSION",
+    "Baseline",
+    "BaselineError",
+    "BaselineExistsError",
+    "BaselineFile",
+    "BaselineIOError",
     "DEFAULT_CHUNK_SIZE",
     "FileScanResult",
+    "IncompleteScanError",
+    "InvalidBaselineError",
     "ScanError",
     "ScanErrorKind",
     "ScanReport",
     "ScanStatus",
+    "UnsupportedBaselineVersionError",
+    "UnsafeBaselinePathError",
+    "baseline_to_json",
+    "check_baseline_compatibility",
+    "create_baseline",
+    "is_baseline_compatible",
+    "load_baseline",
     "scan_directory",
+    "save_baseline",
     "sha256_file",
+    "validate_baseline_data",
 ]
 __version__ = "0.1.0"

@@ -6,9 +6,10 @@ being developed incrementally as a command-line application.
 
 ## Current status
 
-Milestones 1 and 2 provide streaming SHA-256 hashing and a reusable recursive
-directory scanner. Baselines, change detection, report formats, the CLI, and
-background monitoring are planned but are **not yet implemented**.
+Milestones 1 through 3 provide streaming SHA-256 hashing, a reusable recursive
+directory scanner, and secure versioned JSON baseline storage. Change
+detection, report formats, the CLI, and background monitoring are planned but
+are **not yet implemented**.
 
 The hashing function:
 
@@ -28,6 +29,16 @@ The directory scanner:
 - reports read and traversal errors separately;
 - skips symbolic links, directory junctions, and Windows reparse points; and
 - detects common signs that a file changed while it was being hashed.
+
+Baseline management:
+
+- accepts only complete scans with trusted file hashes;
+- stores a versioned, strictly validated JSON document;
+- records the canonical scan root and intentionally skipped link paths;
+- rejects malformed hashes, timestamps, paths, duplicates, and unknown fields;
+- enforces a 16 MiB default input limit;
+- requires storage outside the monitored directory; and
+- creates new files atomically without replacing an existing baseline.
 
 ## Requirements
 
@@ -86,6 +97,21 @@ The scanner returns filesystem problems in `report.errors`; it does not raise
 ordinary missing-path, permission, or mid-scan deletion errors. Files that fail
 or change during scanning have no trusted digest.
 
+Create, save, and load a baseline outside the monitored directory:
+
+```python
+from integrityguard.baseline import create_baseline, load_baseline, save_baseline
+from integrityguard.scanner import scan_directory
+
+report = scan_directory("C:/monitored")
+baseline = create_baseline(report)
+save_baseline(baseline, "C:/integrity-data/baseline.json")
+loaded = load_baseline("C:/integrity-data/baseline.json")
+```
+
+`save_baseline()` never overwrites its destination. Replace or rotation policy
+must be an explicit future operation rather than an accidental side effect.
+
 ## Project layout
 
 ```text
@@ -94,21 +120,28 @@ tests/                Automated tests using synthetic temporary files
 docs/learning-notes.md
                       Security and implementation learning material
 docs/architecture.md  Current component and trust-boundary design
+docs/security-model.md
+                      Assets, threats, assumptions, and limitations
 ```
 
 ## Roadmap
 
-The next milestone will introduce versioned baseline storage using the scanner
-results. Later milestones will add change detection, reporting, a CLI, and
-optional monitoring.
+The next milestone will compare new scans with trusted baselines to classify
+added, deleted, modified, and unchanged files. Later milestones will add report
+formats, a CLI, and optional monitoring.
 
 ## Security limitations
 
 Directory scans are not atomic filesystem snapshots. Another process can
 change a file between discovery, hashing, and the final metadata check. The
 scanner detects common size, timestamp, and identity changes, but cannot detect
-every adversarial race. Protecting future baseline files is also outside the
-current milestone.
+every adversarial race.
+
+SHA-256 does not authenticate a baseline. Anyone who can alter a baseline can
+replace both a stored digest and its related metadata. Baseline files therefore
+need operating-system access controls and backups. Digital signatures or an
+HMAC with separately protected keys are future enhancements, not implemented
+features.
 
 ## License
 

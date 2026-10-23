@@ -1,4 +1,4 @@
-# IntegrityGuard Learning Notes: Milestones 1 and 2
+# IntegrityGuard Learning Notes: Milestones 1 through 3
 
 ## SHA-256
 
@@ -130,3 +130,78 @@ status and also has no trusted digest.
 This design lets a future caller distinguish content state from scanner health
 without suppressing evidence. Error messages can contain filesystem paths or
 operating-system details, so reports should be protected before sharing them.
+
+## What a baseline is
+
+A baseline is a trusted snapshot of expected file fingerprints and metadata.
+Future scans can be compared with it to determine which paths were added,
+removed, or modified. A baseline is useful only when its originating scan is
+complete, so IntegrityGuard refuses to create one from failed or unstable file
+records.
+
+Skipped links are different from failed reads. The scanner deliberately does
+not cross links or reparse points, and the baseline records their paths so an
+operator can see what was outside the snapshot's scope.
+
+## Versioned JSON schema
+
+JSON is portable, human-readable, and supported by Python's standard library.
+The schema version allows later releases to reject or deliberately migrate
+formats they do not understand. The hash algorithm identifier prevents a
+digest from being interpreted under the wrong algorithm.
+
+Strict validation is important because JSON permits more shapes than the
+application expects. IntegrityGuard rejects unknown or missing fields,
+duplicate object keys, duplicate file paths, malformed hashes, negative sizes,
+invalid timestamps, unsafe paths, and unsupported versions. It also bounds the
+number of input bytes before parsing to limit memory consumption.
+
+## Canonical paths
+
+The baseline stores the scan root as a resolved absolute path. File entries use
+already-normalized relative paths. The loader never converts a suspicious path
+such as `folder/../secret` into an acceptable one; it rejects the input. This
+avoids allowing two different strings to alias the same future filesystem path.
+
+Windows paths require special attention because drive-qualified paths,
+backslashes, junctions, trailing dots, trailing spaces, and case differences
+can create aliases. Baseline file entries therefore use forward slashes and a
+strict portable component policy.
+
+## Atomic writes and exclusive creation
+
+An atomic publication changes the visible destination from absent to complete
+in one filesystem operation. IntegrityGuard first writes and synchronizes a
+temporary file in the destination directory. It then creates the final name as
+a hard link to that same file and removes the temporary name.
+
+Hard-link creation is also exclusive: it fails if the destination exists.
+This matters because checking `exists()` and then calling a replacement
+operation has a race between those actions. `os.replace()` is atomic for
+replacement, but replacement is exactly what baseline creation must avoid.
+
+The approach intentionally fails on filesystems without hard-link support.
+Falling back to copying or direct creation would expose partial output or lose
+race-safe no-overwrite behavior.
+
+## Integrity versus authentication
+
+SHA-256 supports integrity comparison: a changed file normally has a different
+digest. It does not authenticate the baseline. If an attacker can edit the
+baseline, they can calculate a new digest for their modified file and store
+both together.
+
+Authentication needs a secret or private signing key that the baseline attacker
+cannot access. An HMAC uses a shared secret, while a digital signature uses a
+private signing key and a public verification key. Both are future work. For
+now, baseline directories need strong operating-system permissions, backups,
+and independent audit controls.
+
+## Baseline filesystem races
+
+Path inspection, temporary creation, publication, and later loading occur at
+different times. Link rejection and file-identity checks reduce redirection
+risk, but portable Python cannot turn all Windows path operations into one
+transaction. An attacker who can write to the baseline directory may still
+race those checks. Restricting directory write access is therefore part of the
+security model, not an optional deployment detail.
