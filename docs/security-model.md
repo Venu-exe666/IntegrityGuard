@@ -2,10 +2,11 @@
 
 ## Scope and protected assets
 
-Milestones 3 through 5 record SHA-256 fingerprints, compare them with fresh
-scanner output, and present the result through a CLI and saved reports. The
-protected assets are the monitored file contents, assessment accuracy, the
-stored baseline, and exported report records.
+Milestones 3 through 6 record SHA-256 fingerprints, compare them with fresh
+scanner output, present results through a CLI and saved reports, and repeat
+those comparisons in a foreground polling session. The protected assets are
+the monitored file contents, assessment accuracy, the stored baseline, exported
+report records, and the integrity of the active monitoring state.
 
 IntegrityGuard reads monitored files but does not modify, execute, upload, or
 delete them. It makes no network requests and does not elevate privileges.
@@ -58,6 +59,12 @@ access only to trusted administrators or the IntegrityGuard service account.
 - Report files omit monitored absolute roots and raw exception messages.
 - Existing report destinations and report paths inside the root are rejected.
 - Invalid or inconsistent historical reports are rejected before rendering.
+- Watch cycles always compare with the original loaded baseline, never merely
+  with the previous scan.
+- Identical alert suppression changes presentation only, not classification.
+- A root that disappears during monitoring produces UNKNOWN states rather than
+  false deletions.
+- Foreground synchronous scans cannot overlap or leave worker threads behind.
 
 ## Conservative change assessment
 
@@ -103,6 +110,22 @@ The detector trusts scanner evidence and the loaded baseline after validation.
 It cannot recover a file state hidden by a TOCTOU race, detect kernel-level
 filesystem deception, or determine whether matching bytes are benign.
 
+Periodic polling has an observation gap. A short-lived change that begins and
+ends between two scans may not be detected. A shorter interval narrows that gap
+but increases file reads, hashing work, CPU usage, and disk I/O. Large trees or
+slow storage increase scan duration, which is added to the configured wait.
+
+Monitoring alert state exists only in process memory and contains current
+relative paths and finding fingerprints. It is intentionally not persisted or
+sent elsewhere. Restarting a session forgets suppression history and reports
+active findings again. Repeated identical scan errors are summarized on every
+cycle so operational failures do not disappear indefinitely.
+
+Ctrl+C is handled in the foreground loop. An interruption during a wait or
+scan prevents another scan from launching and preserves the last fully
+completed status for the final summary. OS-level force termination, power loss,
+or interpreter failure cannot guarantee that summary output appears.
+
 ## Integrity is not authentication
 
 SHA-256 can show that bytes differ from a stored digest. It cannot establish
@@ -124,8 +147,9 @@ prove that the host is uncompromised. An attacker might alter excluded data,
 tamper with an unauthenticated baseline, evade a non-atomic scan, operate only
 in memory, or compromise components below the scanner's trust boundary.
 
-## Explicit non-goals for Milestone 5
+## Explicit non-goals for Milestone 6
 
-Milestone 5 does not detect malware, prevent or remediate file changes,
-authenticate or rotate baselines, update baselines automatically, perform
-background monitoring, send notifications, or use databases or cloud services.
+Milestone 6 does not provide real-time event monitoring, detect malware,
+prevent or remediate file changes, authenticate or rotate baselines, update
+baselines automatically, install a background service, send notifications, or
+use databases, telemetry, external logging, or cloud services.

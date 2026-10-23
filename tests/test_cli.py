@@ -43,7 +43,13 @@ def _initialize(tmp_path: Path, filename: str = "file.txt") -> tuple[Path, Path]
 
 @pytest.mark.parametrize(
     "arguments",
-    [[], ["init", "--help"], ["scan", "--help"], ["report", "--help"]],
+    [
+        [],
+        ["init", "--help"],
+        ["scan", "--help"],
+        ["report", "--help"],
+        ["watch", "--help"],
+    ],
 )
 def test_cli_help(arguments: list[str], capsys: pytest.CaptureFixture[str]) -> None:
     args = ["--help"] if not arguments else arguments
@@ -396,6 +402,49 @@ def test_missing_arguments_use_operational_error_exit_code(
 
     assert captured.value.code == EXIT_OPERATIONAL_ERROR
     assert "required" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("interval", ["invalid", "0", "-1", "nan", "inf"])
+def test_watch_rejects_invalid_intervals(
+    interval: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as captured:
+        main(
+            [
+                "watch",
+                "--root",
+                ".",
+                "--baseline",
+                "baseline.json",
+                "--interval",
+                interval,
+            ]
+        )
+
+    assert captured.value.code == EXIT_OPERATIONAL_ERROR
+    assert "polling interval" in capsys.readouterr().err
+
+
+def test_watch_missing_baseline_is_operational_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+
+    code = main(
+        [
+            "watch",
+            "--root",
+            str(root),
+            "--baseline",
+            str(tmp_path / "missing.json"),
+        ]
+    )
+
+    assert code == EXIT_OPERATIONAL_ERROR
+    assert "Unable to read the baseline" in capsys.readouterr().err
 
 
 def test_unicode_and_space_paths_work_end_to_end(

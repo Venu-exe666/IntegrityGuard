@@ -1,4 +1,4 @@
-# IntegrityGuard Learning Notes: Milestones 1 through 5
+# IntegrityGuard Learning Notes: Milestones 1 through 6
 
 ## SHA-256
 
@@ -333,3 +333,95 @@ These protections have limits. Hard-link support is filesystem-dependent, and
 portable path checks cannot eliminate every Windows time-of-check/time-of-use
 race against an attacker who can modify the report directory. Restrictive ACLs
 remain essential.
+
+## Periodic polling versus event-driven monitoring
+
+Periodic polling scans the complete selected tree, waits, and scans again. It
+uses only portable Python and reuses the same trustworthy scanner behavior on
+Windows. Event-driven monitoring instead asks an operating-system facility to
+report filesystem events. Event APIs can react faster and avoid repeatedly
+hashing unchanged trees, but they are platform-specific, may overflow event
+queues, and still need verification scans. Milestone 6 implements polling only.
+
+Polling is not real-time detection. A file can be created, changed, and restored
+entirely between observations. Reducing the interval narrows that opportunity
+but consumes more CPU time, disk bandwidth, cache capacity, and energy. A scan
+of a large or slow tree can itself take longer than the configured interval.
+
+## Foreground scheduling and monotonic time
+
+The first watch scan starts immediately. After each scan finishes, the engine
+uses a monotonic clock to calculate the polling wait. Monotonic time is suitable
+for elapsed-duration scheduling because wall-clock corrections cannot make it
+jump backward or forward. UTC wall-clock time remains appropriate for labels
+and session records.
+
+Scanning and waiting happen sequentially in the main thread. This prevents
+overlapping scans, eliminates worker-thread shutdown problems, and means scan
+duration is added to the configured wait. `time.sleep()` avoids busy waiting,
+so the idle monitor does not continuously consume a CPU core.
+
+## A fixed baseline is not the previous scan
+
+Every watch cycle compares its fresh `ScanReport` to the same loaded trusted
+`Baseline`. If baseline hash A changes to B, later scans containing B remain
+modified relative to A. Treating B as the new reference would silently
+acknowledge an unapproved change and defeat integrity monitoring.
+
+The watch process never writes, replaces, or updates the baseline. Operators
+must use a separate explicit trust decision and baseline-management workflow
+for any future approved update.
+
+## Alert deduplication is presentation state
+
+Repeatedly printing the same modified path every few seconds creates noise, but
+changing its integrity classification would be incorrect. The monitor therefore
+keeps a bounded in-memory map of findings active in the most recent cycle. Its
+fingerprints include classification and the current trusted hash where one is
+available.
+
+A new key or changed fingerprint is displayed. A key that disappears produces
+a resolution. This makes a new hash, classification change, resolved issue, or
+reappearing issue visible while suppressing identical repetitions. The map is
+replaced every cycle, is never persisted, and is forgotten on restart.
+
+Resolution means only that the particular finding is no longer observed. A
+file matching its baseline-observed bytes again does not prove that no malicious
+activity occurred or that the wider system is safe.
+
+## UNKNOWN during monitoring
+
+An inaccessible file, interrupted hash, skipped path, or failed subtree remains
+UNKNOWN. If the root disappears after monitoring begins, baseline files in the
+affected scope become UNKNOWN rather than deleted because successful enumeration
+did not prove their absence. The entire assessment is inconclusive.
+
+New structured scan errors are displayed immediately. Identical recurring
+errors may be deduplicated as alert lines, but every cycle continues to show the
+number of active errors and an incomplete-assessment warning. When an UNKNOWN
+file later has a trusted digest, its new trusted classification is displayed.
+
+## Ctrl+C and deterministic cleanup
+
+Python delivers an interactive Ctrl+C as `KeyboardInterrupt` in the main
+thread. The polling loop catches it around both scanning and sleeping, launches
+no further scan, and returns the last completely recorded status. The CLI then
+prints start time, completed scan count, last scan time, final assessment,
+active changes, unknown findings, and scan-error count before exiting with 0.
+
+No worker threads, child services, network clients, or persistent alert stores
+need cleanup. A force-kill, power failure, or OS crash is different from Ctrl+C
+and may prevent final output.
+
+## Monitoring races and Windows considerations
+
+Repeating scans does not eliminate the scanner's TOCTOU limits. Each traversal
+is still a sequence of discovery, hashing, and metadata checks rather than an
+atomic filesystem snapshot. Windows junctions and reparse points remain outside
+the monitored scope, and permissions can change between operations.
+
+PowerShell paths containing spaces should be quoted when entered manually.
+IntegrityGuard writes UTF-8 terminal streams so Unicode relative paths survive
+redirection. Very aggressive intervals can contend with applications and
+security software for Windows filesystem and antivirus scanning resources;
+start with the ten-second default and tune using measured scan duration.

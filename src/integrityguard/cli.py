@@ -16,6 +16,17 @@ from integrityguard.baseline import (
     save_baseline,
 )
 from integrityguard.detector import DetectorError, compare_baseline
+from integrityguard.monitoring import (
+    DEFAULT_INTERVAL_SECONDS,
+    InvalidMonitoringIntervalError,
+    MonitoringCycle,
+    MonitoringError,
+    format_monitoring_cycle,
+    format_monitoring_header,
+    format_monitoring_summary,
+    monitor_directory,
+    validate_interval,
+)
 from integrityguard.reporting import (
     AssessmentStatus,
     ReportError,
@@ -129,6 +140,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include individual unchanged paths.",
     )
     report_parser.set_defaults(handler=_run_report)
+
+    watch_parser = subparsers.add_parser(
+        "watch",
+        help="Periodically compare foreground scans with a fixed baseline.",
+        description=(
+            "Monitor a directory in the foreground until Ctrl+C, without "
+            "updating its baseline."
+        ),
+    )
+    watch_parser.add_argument(
+        "--root",
+        required=True,
+        type=Path,
+        help="Directory to monitor.",
+    )
+    watch_parser.add_argument(
+        "--baseline",
+        required=True,
+        type=Path,
+        help="Existing validated baseline JSON file.",
+    )
+    watch_parser.add_argument(
+        "--interval",
+        type=_polling_interval,
+        default=DEFAULT_INTERVAL_SECONDS,
+        help="Seconds between completed scans (minimum: 1; default: 10).",
+    )
+    watch_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show classification counts for every completed cycle.",
+    )
+    watch_parser.set_defaults(handler=_run_watch)
     return parser
 
 
@@ -141,7 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return args.handler(args)
     except CLIError as error:
         _diagnostic(str(error))
-    except (BaselineError, DetectorError, ReportError) as error:
+    except (BaselineError, DetectorError, MonitoringError, ReportError) as error:
         _diagnostic(str(error))
     except OSError:
         _diagnostic("A filesystem operation failed.")
@@ -192,6 +236,33 @@ def _run_report(args: argparse.Namespace) -> int:
     report = load_report(args.input)
     sys.stdout.write(format_report(report, verbose=args.verbose, historical=True))
     return EXIT_SUCCESS
+
+
+def _run_watch(args: argparse.Namespace) -> int:
+    baseline = load_baseline(args.baseline)
+    sys.stdout.write(format_monitoring_header(args.root, args.interval))
+    sys.stdout.flush()
+
+    def display_cycle(cycle: MonitoringCycle) -> None:
+        sys.stdout.write(format_monitoring_cycle(cycle, verbose=args.verbose))
+        sys.stdout.flush()
+
+    session = monitor_directory(
+        args.root,
+        baseline,
+        interval=args.interval,
+        on_cycle=display_cycle,
+    )
+    sys.stdout.write(format_monitoring_summary(session))
+    sys.stdout.flush()
+    return EXIT_SUCCESS
+
+
+def _polling_interval(value: str) -> float:
+    try:
+        return validate_interval(value)
+    except InvalidMonitoringIntervalError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
 
 
 def _diagnostic(message: str) -> None:

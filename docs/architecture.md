@@ -1,33 +1,21 @@
 # IntegrityGuard Architecture
 
-## Milestone 5 components
+## Milestone 6 components
 
-IntegrityGuard currently has six application layers:
+IntegrityGuard currently has seven application layers:
 
 ```text
 cli.main()
-        |
-        +-- orchestrates commands, stdout/stderr, and exit status
-        |
-reporting.create_security_report() / save_report() / load_report()
-        |
-        +-- presents and persists sanitized change assessments
-        |
-detector.compare_baseline()
-        |
-        +-- compares trusted hashes and preserves uncertain states
-        |
-baseline.create_baseline() / save_baseline() / load_baseline()
-        |
-        +-- consumes and validates ScanReport records
-        |
-scanner.scan_directory()
-        |
-        +-- discovers regular files and collects metadata
-        |
-hashing.sha256_file()
-        |
-        +-- streams file bytes into SHA-256
+  +-- monitoring.monitor_directory() -- schedules scans and alert transitions
+  +-- reporting.* -------------------- presents and persists assessments
+  +-- baseline.* --------------------- validates and stores trusted state
+  +-- scanner.scan_directory() ------- discovers files and metadata
+             |
+             +-- hashing.sha256_file() streams file bytes into SHA-256
+
+monitoring and reporting consume detector.compare_baseline(), which compares
+trusted hashes and preserves uncertain states. Monitoring also calls the
+scanner directly for every polling cycle.
 ```
 
 `hashing.py` performs one task: calculate the SHA-256 digest of a specified
@@ -56,6 +44,12 @@ JSON omits the absolute scan root and raw scanner messages.
 scanner, baseline, detector, and reporting APIs, routes normal output to stdout
 and diagnostics to stderr, and maps assessment state to stable process codes.
 It does not duplicate hashing, traversal, or comparison logic.
+
+`monitoring.py` is a synchronous foreground polling layer. It accepts one
+immutable `Baseline`, calls `scan_directory()`, compares every result with that
+same baseline, and exposes immutable cycle and session status objects. Clock,
+wait, scan, and cycle-handler callables are injectable for deterministic tests.
+No worker thread, event watcher, persistent state, or network component exists.
 
 ## Result model
 
@@ -161,6 +155,7 @@ assessment remains inconclusive.
 init:   root -> scan -> validated baseline -> exclusive baseline file
 scan:   root + baseline -> scan -> comparison -> text or SecurityReport JSON
 report: saved JSON -> bounded strict validation -> historical text view
+watch:  fixed baseline -> scan -> compare -> alert transition -> wait -> repeat
 ```
 
 The JSON report has one versioned envelope with exact fields. File records are
@@ -175,8 +170,29 @@ targets and link-like paths are rejected, data is flushed before publication,
 and atomic hard-link creation prevents replacement. A saved report is evidence
 from an earlier scan, not a baseline and not a fresh assessment.
 
+## Polling and alert-state flow
+
+The first watch scan runs immediately. After a scan and its output complete, a
+monotonic deadline determines the remaining polling wait. The next scan runs
+in the same foreground thread, so scans cannot overlap. Scan duration plus the
+configured wait determines the effective time between observations.
+
+Assessment and presentation are separate. `ChangeReport` always classifies the
+fresh scan relative to the fixed baseline. A bounded dictionary then retains
+only fingerprints for findings active in the most recent cycle. A new key or a
+changed fingerprint generates an alert; a missing prior key generates a
+resolution. Identical active findings are not reprinted, although each cycle
+summarizes active change, unknown, and scan-error counts. This state is never
+written to disk and disappears when the process exits.
+
+An ordinary `OSError` escaping the scanner becomes a root-scoped structured
+error and therefore an inconclusive cycle. Existing structured scanner errors
+remain unchanged. `KeyboardInterrupt` during scanning or waiting stops the
+loop before another scan begins and returns the last completed session status.
+Other unexpected exceptions propagate rather than being hidden.
+
 ## Deferred components
 
-Baseline authentication and rotation, background monitoring, notifications,
-database storage, cloud integrations, and automatic remediation are
-deliberately not implemented in Milestone 5.
+Baseline authentication and rotation, event-driven filesystem watching,
+background services, notifications, database storage, cloud integrations, and
+automatic remediation are deliberately not implemented in Milestone 6.

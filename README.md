@@ -6,10 +6,11 @@ being developed incrementally as a command-line application.
 
 ## Current status
 
-Milestones 1 through 5 provide streaming SHA-256 hashing, a reusable recursive
+Milestones 1 through 6 provide streaming SHA-256 hashing, a reusable recursive
 directory scanner, secure versioned JSON baseline storage, conservative
-file-integrity change detection, and a user-facing CLI with versioned reports.
-Background monitoring and notifications are **not implemented**.
+file-integrity change detection, a user-facing CLI with versioned reports, and
+foreground periodic monitoring. Background services and notifications are
+**not implemented**.
 
 The hashing function:
 
@@ -50,15 +51,20 @@ Change detection:
 - prevents failed or skipped subtrees from producing false deletions; and
 - rejects comparisons between unrelated scan roots.
 
-CLI and reporting:
+CLI, reporting, and monitoring:
 
-- provide `init`, `scan`, and `report` commands through `argparse`;
+- provide `init`, `scan`, `report`, and `watch` commands through `argparse`;
 - keep human-readable and machine-readable output separate;
 - use documented exit codes for clean, changed, inconclusive, and failed runs;
 - serialize deterministic, strictly validated report schema version 1 JSON;
 - omit absolute monitored roots and raw filesystem error messages from reports;
 - refuse to overwrite report files or store them inside the monitored root; and
 - clearly identify saved reports as historical rather than fresh scans.
+
+The `watch` command repeatedly compares fresh scans with the same trusted
+baseline, suppresses identical repeated alerts in memory, reports resolutions,
+and exits cleanly on Ctrl+C. It remains a foreground polling command: it does
+not update the baseline, run as a service, or provide real-time detection.
 
 ## Requirements
 
@@ -158,18 +164,71 @@ add `--verbose` to display them. A JSON scan writes JSON alone to standard
 output unless `--output` is supplied. Diagnostics go to standard error. Both
 streams are configured as UTF-8 so Unicode paths remain stable when redirected.
 
+### Periodic monitoring
+
+Start a foreground watch session with the default ten-second interval:
+
+```powershell
+Set-Location G:\PROJECTSS\IntegrityGuard
+.\.venv\Scripts\integrityguard.exe watch `
+  --root .\demo\monitored `
+  --baseline .\demo\state\baseline.json
+```
+
+Or select another interval of at least one second:
+
+```powershell
+.\.venv\Scripts\integrityguard.exe watch `
+  --root .\demo\monitored `
+  --baseline .\demo\state\baseline.json `
+  --interval 5 `
+  --verbose
+```
+
+The first scan runs immediately. Each later scan starts after the interval has
+elapsed following completion of the previous scan. A session may therefore
+observe changes less often than the configured interval when hashing takes a
+long time. Press Ctrl+C to stop it; normal user-requested shutdown returns 0.
+
+Example output:
+
+```text
+IntegrityGuard | Monitoring
+
+Root: G:\PROJECTSS\IntegrityGuard\demo\monitored
+Interval: 10 seconds
+Baseline: Validated fixed reference
+Press Ctrl+C to stop monitoring.
+[12:00:00Z] Initial assessment complete
+[12:00:00Z] No integrity changes detected
+[12:00:10Z] MODIFIED  example.txt
+[12:00:20Z] No new alerts (active changes: 1, unknown: 0, scan errors: 0)
+[12:00:30Z] RESOLVED  example.txt (previously modified)
+
+Monitoring stopped.
+Completed scans: 4
+Final assessment: clean
+```
+
+Every cycle is still compared with the saved baseline. Suppressing an identical
+terminal alert does not reclassify the file as unchanged or acknowledge the
+change. Resolutions mean only that a finding is no longer observed; they do not
+prove the system is safe. Incomplete scans remain explicitly inconclusive, and
+repeated scan errors produce a per-cycle active-error reminder.
+
 ### Exit codes
 
 | Code | Meaning |
 | ---: | --- |
-| 0 | Successful initialization, conclusive clean scan, or successful report view |
+| 0 | Successful operation, clean scan, or user-requested watch shutdown |
 | 1 | Fresh scan conclusively detected one or more changes |
 | 2 | Fresh scan was incomplete or its assessment was inconclusive |
 | 3 | Invalid arguments, unsafe paths, invalid data, or another operational failure |
 
 The `report` command returns 0 after successfully validating and displaying a
 historical report, even if that report records changes. It does not perform a
-fresh integrity assessment.
+fresh integrity assessment. `watch` returns 3 for startup configuration errors;
+individual recoverable scan failures remain visible as incomplete cycles.
 
 ### JSON report schema
 
@@ -261,9 +320,8 @@ docs/security-model.md
 
 ## Roadmap
 
-Milestone 5 is complete. Baseline authentication or rotation, optional
-monitoring, and notifications remain future work and are not exposed by the
-current CLI.
+Milestone 6 is complete. Baseline authentication or rotation, background
+service operation, notifications, and release engineering remain future work.
 
 ## Security limitations
 
@@ -282,6 +340,12 @@ A clean comparison is evidence about the files successfully scanned under the
 configured policy. It is not proof that a system is uncompromised, malware-free,
 or free from changes hidden by filesystem races, excluded paths, or a tampered
 baseline.
+
+Polling is not real-time monitoring. A file created, changed, and restored
+between scans may never be observed. Shorter intervals reduce that window but
+increase CPU use, disk reads, and hashing activity. Scan duration also extends
+the effective observation interval, and concurrent filesystem changes retain
+the scanner's documented TOCTOU limitations.
 
 ## License
 
