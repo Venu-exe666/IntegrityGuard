@@ -1,11 +1,21 @@
 """Tests for IntegrityGuard's streaming SHA-256 helper."""
 
 import hashlib
+import io
 from pathlib import Path
 
 import pytest
 
-from integrityguard.hashing import sha256_file
+from integrityguard.hashing import sha256_file, sha256_stream
+
+
+def test_hashes_an_existing_binary_stream_without_closing_it() -> None:
+    stream = io.BytesIO(b"handle-bound content")
+
+    digest = sha256_stream(stream)
+
+    assert digest == hashlib.sha256(b"handle-bound content").hexdigest()
+    assert not stream.closed
 
 
 def test_empty_file(tmp_path: Path) -> None:

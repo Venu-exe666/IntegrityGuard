@@ -25,9 +25,10 @@ control data in exception type labels. Viewing a saved report never rescans the
 filesystem and is clearly labeled historical.
 
 A baseline can be created only from a `ScanReport` with no errors and with a
-trusted hash and complete metadata for every discovered regular file. Skipped
-symbolic links, junctions, and reparse points are allowed because the scanner
-deliberately excludes their targets. Their paths are recorded in the baseline.
+trusted hash and complete metadata for every discovered regular file. Symbolic
+links, junctions, and reparse points found during inspection are deliberately
+excluded, and their paths are recorded in the baseline. Substitutions detected
+during opening or traversal instead make the scan incomplete.
 
 ## Storage policy
 
@@ -86,9 +87,10 @@ clean system.
 ## Residual risks and assumptions
 
 Filesystem checks are not transactions. A local attacker with write access to
-the baseline directory may race path checks or tamper with a baseline after it
-is saved. The portable standard-library design reduces these windows but cannot
-provide a Windows kernel handle-based directory sandbox.
+the baseline directory may race storage-path checks or tamper with a baseline
+after it is saved. Scanner file hashing is handle-bound, but baseline and report
+publication still rely on pathname checks and do not provide a kernel-enforced
+directory sandbox.
 
 Hard-link publication requires a filesystem that supports hard links. On an
 unsupported filesystem IntegrityGuard fails instead of falling back to a
@@ -103,8 +105,12 @@ validated, but shell redirection and surrounding automation remain the
 operator's responsibility.
 
 Reading monitored files may allow the operating system to update access-time
-metadata. Scanner pre/post checks cannot detect every adversarial change that
-restores identity, size, and timestamps before verification.
+metadata. The scanner requires stable object identity and rejects a pathname
+that opens as a different object. It cannot detect every concurrent in-place
+write that restores size and timestamps before handle verification, nor can it
+detect every directory-entry change restored together with directory metadata.
+It also cannot defend against a compromised kernel or deceptive filesystem
+implementation.
 
 The detector trusts scanner evidence and the loaded baseline after validation.
 It cannot recover a file state hidden by a TOCTOU race, detect kernel-level

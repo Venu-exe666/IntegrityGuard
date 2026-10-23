@@ -65,13 +65,16 @@ in every environment.
 
 A recursive scan visits a starting directory, processes its regular files, and
 repeats the same operation for each child directory. IntegrityGuard uses
-`os.scandir()` because each directory entry can provide file type and metadata
-efficiently. Traversal and hashing remain separate: the scanner discovers a
-file, then delegates its bytes to the Milestone 1 hashing function.
+`os.scandir()` to enumerate names, then performs security-sensitive metadata
+checks through held directory descriptors where the platform supports them.
+Traversal and hashing remain separate: the scanner securely opens the object,
+then delegates that open binary stream to the hashing function.
 
-Recursion must have boundaries. IntegrityGuard does not follow links or Windows
-reparse points and tracks directory identities it has already visited. These
-rules prevent common cycles such as a child link that points back to a parent.
+Recursion must have boundaries. IntegrityGuard excludes links and Windows
+reparse points detected during inspection and tracks directory identities it
+has already visited. Platform-specific no-follow opens and post-open checks
+reject detected substitutions. These rules prevent common cycles such as a
+child link that points back to a parent without claiming an atomic snapshot.
 
 ## File metadata
 
@@ -112,12 +115,21 @@ The filesystem can change while a scan is running. A file may be deleted after
 discovery, replaced before opening, or modified while bytes are being read.
 These time-of-check/time-of-use situations are commonly called TOCTOU races.
 
-IntegrityGuard compares file identity, size, and nanosecond modification time
-before and after hashing. If a difference is visible, it discards the digest.
-This is detection, not an atomic snapshot: a carefully timed change that
-restores the observed metadata can escape detection. Snapshot-capable storage
-or operating-system-specific file locking would be needed for stronger
-guarantees and is outside this milestone.
+IntegrityGuard does not validate one pathname and ask the hasher to open it
+again. It opens the object once, compares the inspected entry with `fstat()`,
+hashes that same handle, and performs handle and entry checks afterward. POSIX
+uses descriptor-relative operations with `O_NOFOLLOW`. Windows opens reparse
+points themselves for inspection and denies delete sharing while handles are
+active. A stable identity is mandatory; without one, scanning fails closed.
+
+This is still not an atomic snapshot. On systems that allow concurrent writes,
+a process can alter bytes in place while they are read. If it restores size and
+timestamps quickly enough, metadata checks may not reveal that the digest was
+calculated across multiple content states. Filesystem snapshots or stronger
+platform-specific locking are required to rule out that class of attack. A
+directory entry can likewise disappear and be restored between enumeration and
+the final directory check; restoring its directory metadata can conceal the
+temporary omission.
 
 ## Secure error handling
 
@@ -415,10 +427,12 @@ and may prevent final output.
 
 ## Monitoring races and Windows considerations
 
-Repeating scans does not eliminate the scanner's TOCTOU limits. Each traversal
-is still a sequence of discovery, hashing, and metadata checks rather than an
-atomic filesystem snapshot. Windows junctions and reparse points remain outside
-the monitored scope, and permissions can change between operations.
+Repeating scans does not eliminate all TOCTOU limits. Handle-bound hashing
+prevents a pathname replacement from changing which object supplies the bytes,
+and Windows sharing rules prevent renaming an opened scan object. Each scan is
+still a sequence rather than an atomic snapshot, so in-place writes and
+permissions can change between operations. Junctions and reparse points found
+during inspection remain outside the monitored scope.
 
 PowerShell paths containing spaces should be quoted when entered manually.
 IntegrityGuard writes UTF-8 terminal streams so Unicode relative paths survive

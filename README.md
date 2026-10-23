@@ -28,8 +28,11 @@ The directory scanner:
 - returns hashes, byte sizes, UTC modification times, and scan statuses;
 - normalizes relative paths with forward slashes and sorts them predictably;
 - reports read and traversal errors separately;
-- skips symbolic links, directory junctions, and Windows reparse points; and
-- detects common signs that a file changed while it was being hashed.
+- excludes symbolic links, directory junctions, and Windows reparse points
+  found during inspection;
+- hashes an already-open file object and binds metadata checks to that handle;
+  and
+- rejects detected identity substitutions and changes during hashing.
 
 Baseline management:
 
@@ -320,15 +323,23 @@ docs/security-model.md
 
 ## Roadmap
 
-Milestone 6 is complete. Baseline authentication or rotation, background
-service operation, notifications, and release engineering remain future work.
+Milestone 7.1 adds handle-bound scanner hashing and adversarial regression
+tests for the confirmed path-swap vulnerability. Baseline authentication or
+rotation, background service operation, notifications, and release engineering
+remain future work.
 
 ## Security limitations
 
-Directory scans are not atomic filesystem snapshots. Another process can
-change a file between discovery, hashing, and the final metadata check. The
-scanner detects common size, timestamp, and identity changes, but cannot detect
-every adversarial race.
+Directory scans are not atomic filesystem snapshots. The scanner opens files
+with no-follow or reparse-point controls, verifies the opened object's identity,
+hashes that same handle, and checks it again afterward. POSIX traversal uses
+directory-relative descriptors. Windows holds directory and file handles
+without delete sharing while they are in use. These controls close the
+confirmed pathname-reopen vulnerability, but they cannot detect every
+concurrent in-place write that restores observable metadata or deception below
+the operating-system filesystem interface. A transient directory-entry change
+that is restored together with directory metadata can also evade a sequential
+enumeration.
 
 SHA-256 does not authenticate a baseline. Anyone who can alter a baseline can
 replace both a stored digest and its related metadata. Baseline files therefore

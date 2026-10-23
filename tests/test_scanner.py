@@ -120,19 +120,6 @@ def test_reparse_points_are_skipped_without_accessing_targets(
 ) -> None:
     class FakeEntry:
         name = "junction"
-        path = str(tmp_path / name)
-
-        @staticmethod
-        def stat(*, follow_symlinks: bool) -> object:
-            assert follow_symlinks is False
-            return type(
-                "FakeStat",
-                (),
-                {
-                    "st_mode": 0,
-                    "st_file_attributes": scanner_module._WINDOWS_REPARSE_POINT,
-                },
-            )()
 
     class FakeScandir:
         def __enter__(self) -> object:
@@ -142,6 +129,25 @@ def test_reparse_points_are_skipped_without_accessing_targets(
             return None
 
     monkeypatch.setattr(scanner_module.os, "scandir", lambda path: FakeScandir())
+    real_entry_stat = scanner_module._entry_stat
+
+    def fake_entry_stat(
+        parent_descriptor: int,
+        path: Path,
+        entry_name: str,
+    ) -> object:
+        if entry_name == "junction":
+            return type(
+                "FakeStat",
+                (),
+                {
+                    "st_mode": 0,
+                    "st_file_attributes": scanner_module._WINDOWS_REPARSE_POINT,
+                },
+            )()
+        return real_entry_stat(parent_descriptor, path, entry_name)
+
+    monkeypatch.setattr(scanner_module, "_entry_stat", fake_entry_stat)
 
     report = scan_directory(tmp_path)
 
@@ -192,10 +198,10 @@ def test_permission_error_is_reported_separately(
     target = tmp_path / "restricted.txt"
     target.write_bytes(b"restricted")
 
-    def deny_read(path: Path) -> str:
-        raise PermissionError(13, "Access is denied", path)
+    def deny_read(*args: object, **kwargs: object) -> int:
+        raise PermissionError(13, "Access is denied", target)
 
-    monkeypatch.setattr(scanner_module, "sha256_file", deny_read)
+    monkeypatch.setattr(scanner_module, "_open_file", deny_read)
 
     report = scan_directory(tmp_path)
 
@@ -213,17 +219,21 @@ def test_file_deleted_during_scan_is_reported(
     target = tmp_path / "temporary.txt"
     target.write_bytes(b"temporary")
 
-    def delete_before_read(path: Path) -> str:
-        path.unlink()
-        return sha256_file(path)
+    real_open_file = scanner_module._open_file
 
-    monkeypatch.setattr(scanner_module, "sha256_file", delete_before_read)
+    def delete_before_read(path: Path, *args: object, **kwargs: object) -> int:
+        path.unlink()
+        return real_open_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(scanner_module, "_open_file", delete_before_read)
 
     report = scan_directory(tmp_path)
 
     assert report.files[0].status is ScanStatus.ERROR
-    assert report.errors[0].kind is ScanErrorKind.FILE_ACCESS
-    assert report.errors[0].exception_type == "FileNotFoundError"
+    file_error = next(
+        error for error in report.errors if error.kind is ScanErrorKind.FILE_ACCESS
+    )
+    assert file_error.exception_type == "FileNotFoundError"
 
 
 def test_file_modified_while_hashing_is_not_reported_as_successful(
@@ -233,12 +243,14 @@ def test_file_modified_while_hashing_is_not_reported_as_successful(
     target = tmp_path / "changing.txt"
     target.write_bytes(b"before")
 
-    def hash_then_change(path: Path) -> str:
-        digest = sha256_file(path)
-        path.write_bytes(b"different length after hashing")
+    real_sha256_stream = scanner_module.sha256_stream
+
+    def hash_then_change(file_handle: object) -> str:
+        digest = real_sha256_stream(file_handle)  # type: ignore[arg-type]
+        target.write_bytes(b"different length after hashing")
         return digest
 
-    monkeypatch.setattr(scanner_module, "sha256_file", hash_then_change)
+    monkeypatch.setattr(scanner_module, "sha256_stream", hash_then_change)
 
     report = scan_directory(tmp_path)
 

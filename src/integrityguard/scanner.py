@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from os import PathLike
 from pathlib import Path, PurePosixPath
 
-from integrityguard.hashing import sha256_file
+from integrityguard.hashing import sha256_stream
 
 _WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+class _ObjectChangedError(OSError):
+    """Raised when an opened object does not match its inspected entry."""
+
+
+class _UnsupportedIdentityError(OSError):
+    """Raised when stable object identity is unavailable for safe binding."""
 
 
 class ScanStatus(StrEnum):
@@ -70,10 +79,11 @@ class ScanReport:
 def scan_directory(directory: str | PathLike[str]) -> ScanReport:
     """Recursively hash regular files below ``directory`` without writing.
 
-    Relative paths use forward slashes on every operating system. Symbolic
-    links, Windows junctions, and other reparse points are skipped. Files that
-    cannot be read or that appear to change while being hashed receive a
-    non-success status and a corresponding entry in ``errors``.
+    Relative paths use forward slashes on every operating system. Discovered
+    symbolic links, Windows junctions, and other reparse points are skipped,
+    while no-follow opens and handle identity checks reject substitutions.
+    Files that cannot be read or that appear to change while being hashed
+    receive a non-success status and a corresponding entry in ``errors``.
 
     The function reports invalid or inaccessible roots in the returned report
     instead of raising their filesystem exceptions.
@@ -115,33 +125,53 @@ def scan_directory(directory: str | PathLike[str]) -> ScanReport:
         )
         return _build_report(root, files, errors, skipped_paths)
 
-    visited_directories: set[tuple[int, int]] = set()
-    root_identity = _file_identity(root_info)
-    if root_identity is not None:
-        visited_directories.add(root_identity)
+    try:
+        root_descriptor, opened_root = _open_directory(root, root_info)
+    except _ObjectChangedError as error:
+        errors.append(_scan_error(".", ScanErrorKind.DIRECTORY_ACCESS, error))
+        return _build_report(root, files, errors, skipped_paths)
+    except OSError as error:
+        errors.append(_scan_error(".", ScanErrorKind.DIRECTORY_ACCESS, error))
+        return _build_report(root, files, errors, skipped_paths)
 
-    _scan_tree(
-        root,
-        root,
-        visited_directories,
-        files,
-        errors,
-        skipped_paths,
-    )
+    root_identity = _required_identity(opened_root)
+    visited_directories = {root_identity}
+    try:
+        _scan_tree(
+            root,
+            root,
+            root_descriptor,
+            None,
+            None,
+            opened_root,
+            visited_directories,
+            files,
+            errors,
+            skipped_paths,
+        )
+    finally:
+        os.close(root_descriptor)
     return _build_report(root, files, errors, skipped_paths)
 
 
 def _scan_tree(
     root: Path,
     directory: Path,
+    directory_descriptor: int,
+    parent_descriptor: int | None,
+    directory_name: str | None,
+    opened_directory: os.stat_result,
     visited_directories: set[tuple[int, int]],
     files: list[FileScanResult],
     errors: list[ScanError],
     skipped_paths: list[str],
 ) -> None:
     try:
-        with os.scandir(directory) as iterator:
-            entries = sorted(iterator, key=lambda entry: entry.name)
+        scan_target: int | Path = (
+            directory_descriptor if os.name != "nt" else directory
+        )
+        with os.scandir(scan_target) as iterator:
+            entry_names = sorted(entry.name for entry in iterator)
     except OSError as error:
         errors.append(
             _scan_error(
@@ -152,12 +182,12 @@ def _scan_tree(
         )
         return
 
-    for entry in entries:
-        entry_path = Path(entry.path)
+    for entry_name in entry_names:
+        entry_path = directory / entry_name
         relative_path = _relative_path(root, entry_path)
 
         try:
-            entry_info = entry.stat(follow_symlinks=False)
+            entry_info = _entry_stat(directory_descriptor, entry_path, entry_name)
         except OSError as error:
             errors.append(
                 _scan_error(relative_path, ScanErrorKind.ENTRY_INSPECTION, error)
@@ -169,8 +199,21 @@ def _scan_tree(
             continue
 
         if stat.S_ISDIR(entry_info.st_mode):
-            identity = _file_identity(entry_info)
-            if identity is not None and identity in visited_directories:
+            try:
+                child_descriptor, opened_child = _open_directory(
+                    entry_path,
+                    entry_info,
+                    parent_descriptor=directory_descriptor,
+                    entry_name=entry_name,
+                )
+            except OSError as error:
+                errors.append(
+                    _scan_error(relative_path, ScanErrorKind.DIRECTORY_ACCESS, error)
+                )
+                continue
+            identity = _required_identity(opened_child)
+            if identity in visited_directories:
+                os.close(child_descriptor)
                 errors.append(
                     ScanError(
                         relative_path=relative_path,
@@ -179,34 +222,89 @@ def _scan_tree(
                     )
                 )
                 continue
-            if identity is not None:
-                visited_directories.add(identity)
-            _scan_tree(
-                root,
-                entry_path,
-                visited_directories,
-                files,
-                errors,
-                skipped_paths,
-            )
+            visited_directories.add(identity)
+            try:
+                _scan_tree(
+                    root,
+                    entry_path,
+                    child_descriptor,
+                    directory_descriptor,
+                    entry_name,
+                    opened_child,
+                    visited_directories,
+                    files,
+                    errors,
+                    skipped_paths,
+                )
+            finally:
+                os.close(child_descriptor)
         elif stat.S_ISREG(entry_info.st_mode):
-            result, error = _scan_file(entry_path, relative_path, entry_info)
+            result, error = _scan_file(
+                entry_path,
+                relative_path,
+                entry_info,
+                parent_descriptor=directory_descriptor,
+                entry_name=entry_name,
+            )
             files.append(result)
             if error is not None:
                 errors.append(error)
+
+    try:
+        current_directory = _directory_entry_stat(
+            directory,
+            parent_descriptor,
+            directory_name,
+        )
+        if _is_link_like(current_directory) or _changed(
+            opened_directory,
+            current_directory,
+        ):
+            raise _ObjectChangedError(
+                "The directory changed while its contents were being scanned."
+            )
+    except OSError as error:
+        errors.append(
+            _scan_error(
+                _relative_path(root, directory),
+                ScanErrorKind.DIRECTORY_ACCESS,
+                error,
+            )
+        )
 
 
 def _scan_file(
     path: Path,
     relative_path: str,
     before: os.stat_result,
+    *,
+    parent_descriptor: int,
+    entry_name: str,
 ) -> tuple[FileScanResult, ScanError | None]:
     size_bytes = before.st_size
     modified_at = _modified_at_utc(before)
 
+    descriptor = -1
     try:
-        digest = sha256_file(path)
-        after = path.stat(follow_symlinks=False)
+        descriptor = _open_file(
+            path,
+            before,
+            parent_descriptor=parent_descriptor,
+            entry_name=entry_name,
+        )
+        opened_before = os.fstat(descriptor)
+        with os.fdopen(descriptor, "rb") as file_handle:
+            descriptor = -1
+            digest = sha256_stream(file_handle)
+            opened_after = os.fstat(file_handle.fileno())
+            try:
+                named_after = _entry_stat(parent_descriptor, path, entry_name)
+            except OSError as error:
+                raise _ObjectChangedError(
+                    "The file entry changed while it was being hashed."
+                ) from error
+    except _ObjectChangedError as error:
+        return _changed_file_result(relative_path, size_bytes, modified_at, error)
     except OSError as error:
         return (
             FileScanResult(
@@ -218,38 +316,233 @@ def _scan_file(
             ),
             _scan_error(relative_path, ScanErrorKind.FILE_ACCESS, error),
         )
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
-    changed = _changed(before, after)
-    if _is_link_like(after) or not stat.S_ISREG(after.st_mode) or changed:
-        error = ScanError(
-            relative_path=relative_path,
-            kind=ScanErrorKind.FILE_CHANGED,
-            message=(
-                "The file changed while it was being hashed; its digest was "
-                "discarded."
+    if (
+        _is_link_like(named_after)
+        or not stat.S_ISREG(named_after.st_mode)
+        or _changed(opened_before, opened_after)
+        or _changed(opened_after, named_after)
+    ):
+        return _changed_file_result(
+            relative_path,
+            opened_after.st_size,
+            _modified_at_utc(opened_after),
+            _ObjectChangedError(
+                "The file changed while it was being hashed; its digest was discarded."
             ),
-        )
-        return (
-            FileScanResult(
-                relative_path=relative_path,
-                sha256=None,
-                size_bytes=after.st_size,
-                modified_at_utc=_modified_at_utc(after),
-                status=ScanStatus.CHANGED_DURING_SCAN,
-            ),
-            error,
         )
 
     return (
         FileScanResult(
             relative_path=relative_path,
             sha256=digest,
-            size_bytes=after.st_size,
-            modified_at_utc=_modified_at_utc(after),
+            size_bytes=opened_after.st_size,
+            modified_at_utc=_modified_at_utc(opened_after),
             status=ScanStatus.SCANNED,
         ),
         None,
     )
+
+
+def _changed_file_result(
+    relative_path: str,
+    size_bytes: int | None,
+    modified_at: datetime | None,
+    error: OSError,
+) -> tuple[FileScanResult, ScanError]:
+    return (
+        FileScanResult(
+            relative_path=relative_path,
+            sha256=None,
+            size_bytes=size_bytes,
+            modified_at_utc=modified_at,
+            status=ScanStatus.CHANGED_DURING_SCAN,
+        ),
+        ScanError(
+            relative_path=relative_path,
+            kind=ScanErrorKind.FILE_CHANGED,
+            message=str(error),
+            exception_type=type(error).__name__,
+        ),
+    )
+
+
+def _open_file(
+    path: Path,
+    expected: os.stat_result,
+    *,
+    parent_descriptor: int,
+    entry_name: str,
+) -> int:
+    if os.name == "nt":
+        descriptor = _windows_open(path, is_directory=False)
+    else:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | _required_no_follow_flag()
+        )
+        descriptor = os.open(entry_name, flags, dir_fd=parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        _verify_opened_object(expected, opened, require_directory=False)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_directory(
+    path: Path,
+    expected: os.stat_result,
+    *,
+    parent_descriptor: int | None = None,
+    entry_name: str | None = None,
+) -> tuple[int, os.stat_result]:
+    if os.name == "nt":
+        descriptor = _windows_open(path, is_directory=True)
+    else:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | _required_no_follow_flag()
+        )
+        if parent_descriptor is None:
+            descriptor = os.open(path, flags)
+        else:
+            descriptor = os.open(entry_name, flags, dir_fd=parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        _verify_opened_object(expected, opened, require_directory=True)
+        return descriptor, opened
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _verify_opened_object(
+    expected: os.stat_result,
+    opened: os.stat_result,
+    *,
+    require_directory: bool,
+) -> None:
+    expected_identity = _required_identity(expected)
+    opened_identity = _required_identity(opened)
+    expected_type = (
+        stat.S_ISDIR(expected.st_mode)
+        if require_directory
+        else stat.S_ISREG(expected.st_mode)
+    )
+    opened_type = (
+        stat.S_ISDIR(opened.st_mode)
+        if require_directory
+        else stat.S_ISREG(opened.st_mode)
+    )
+    if (
+        _is_link_like(opened)
+        or not expected_type
+        or not opened_type
+        or expected_identity != opened_identity
+    ):
+        raise _ObjectChangedError(
+            "The filesystem object changed between inspection and opening."
+        )
+
+
+def _required_identity(file_info: os.stat_result) -> tuple[int, int]:
+    identity = _file_identity(file_info)
+    if identity is None:
+        raise _UnsupportedIdentityError(
+            "Stable filesystem object identity is unavailable; the path was not scanned."
+        )
+    return identity
+
+
+def _required_no_follow_flag() -> int:
+    value = getattr(os, "O_NOFOLLOW", 0)
+    if value == 0:
+        raise _UnsupportedIdentityError(
+            "This platform does not provide descriptor-relative no-follow opens."
+        )
+    return value
+
+
+def _entry_stat(
+    parent_descriptor: int,
+    path: Path,
+    entry_name: str,
+) -> os.stat_result:
+    if os.name == "nt":
+        return path.stat(follow_symlinks=False)
+    return os.stat(entry_name, dir_fd=parent_descriptor, follow_symlinks=False)
+
+
+def _directory_entry_stat(
+    path: Path,
+    parent_descriptor: int | None,
+    entry_name: str | None,
+) -> os.stat_result:
+    if os.name == "nt" or parent_descriptor is None:
+        return path.stat(follow_symlinks=False)
+    return os.stat(entry_name, dir_fd=parent_descriptor, follow_symlinks=False)
+
+
+def _windows_open(path: Path, *, is_directory: bool) -> int:
+    if sys.platform != "win32":  # pragma: no cover - guarded by os.name
+        raise _UnsupportedIdentityError("Windows handle support is unavailable.")
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+
+    generic_read = 0x80000000
+    share_read = 0x00000001
+    share_write = 0x00000002
+    open_existing = 3
+    open_reparse_point = 0x00200000
+    backup_semantics = 0x02000000
+    flags = open_reparse_point
+    if is_directory:
+        flags |= backup_semantics
+
+    handle = create_file(
+        str(path),
+        generic_read,
+        share_read | share_write,
+        None,
+        open_existing,
+        flags,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return msvcrt.open_osfhandle(
+            int(handle),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+        raise
 
 
 def _changed(before: os.stat_result, after: os.stat_result) -> bool:

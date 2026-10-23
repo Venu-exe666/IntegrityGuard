@@ -3,10 +3,33 @@
 from __future__ import annotations
 
 import hashlib
+from typing import BinaryIO
 from os import PathLike
 from pathlib import Path
 
 DEFAULT_CHUNK_SIZE = 64 * 1024
+
+
+def sha256_stream(
+    file_handle: BinaryIO,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+) -> str:
+    """Return the SHA-256 digest read from an already-open binary stream.
+
+    The caller owns the stream and is responsible for opening and closing it.
+    Keeping pathname policy outside this function lets security-sensitive
+    callers bind validation and hashing to the same filesystem object.
+    """
+    if not isinstance(chunk_size, int):
+        raise TypeError("chunk_size must be an integer")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+
+    digest = hashlib.sha256()
+    while chunk := file_handle.read(chunk_size):
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def sha256_file(
@@ -34,16 +57,7 @@ def sha256_file(
             subclasses such as ``FileNotFoundError`` and ``PermissionError``
             are preserved. No partial digest is returned when this occurs.
     """
-    if not isinstance(chunk_size, int):
-        raise TypeError("chunk_size must be an integer")
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than zero")
-
-    digest = hashlib.sha256()
     path = Path(file_path)
 
     with path.open("rb") as file_handle:
-        while chunk := file_handle.read(chunk_size):
-            digest.update(chunk)
-
-    return digest.hexdigest()
+        return sha256_stream(file_handle, chunk_size=chunk_size)

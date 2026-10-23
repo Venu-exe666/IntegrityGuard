@@ -1,6 +1,6 @@
 # IntegrityGuard Architecture
 
-## Milestone 6 components
+## Milestone 7.1 components
 
 IntegrityGuard currently has seven application layers:
 
@@ -11,15 +11,17 @@ cli.main()
   +-- baseline.* --------------------- validates and stores trusted state
   +-- scanner.scan_directory() ------- discovers files and metadata
              |
-             +-- hashing.sha256_file() streams file bytes into SHA-256
+             +-- hashing.sha256_stream() hashes the scanner's open handle
 
 monitoring and reporting consume detector.compare_baseline(), which compares
 trusted hashes and preserves uncertain states. Monitoring also calls the
 scanner directly for every polling cycle.
 ```
 
-`hashing.py` performs one task: calculate the SHA-256 digest of a specified
-file. It knows nothing about directory traversal or scan reports.
+`hashing.py` calculates SHA-256 digests from either a pathname for general API
+use or an already-open binary stream. It knows nothing about traversal or scan
+reports. The scanner uses the stream form so hashing cannot reopen a validated
+pathname as a different object.
 
 `scanner.py` owns traversal, relative-path normalization, file metadata,
 deterministic ordering, link avoidance, race checks, and error aggregation. It
@@ -67,19 +69,27 @@ is `None` and their status explains that the result is not trustworthy.
 
 ## Trust boundaries and race checks
 
-The monitored filesystem is untrusted and can change at any time. The scanner
-collects metadata before hashing and checks identity, size, and nanosecond
-modification time afterward. A detected difference causes the digest to be
-discarded and an error to be recorded.
+The monitored filesystem is untrusted and can change at any time. For each
+file, the scanner inspects the directory entry, opens it with platform-specific
+no-follow controls, compares the entry identity with `fstat()` on the opened
+object, hashes that same object, and checks both the handle and directory entry
+again. A detected difference causes the digest to be discarded and an error to
+be recorded.
 
-These checks reduce risk but cannot create an atomic snapshot. An attacker or
-another process may change a file and restore its observable metadata between
-checks. Strong snapshot guarantees require operating-system or filesystem
-support outside this milestone.
+On POSIX, child opens and metadata reads are relative to held directory
+descriptors and require `O_NOFOLLOW`. On Windows, `CreateFileW` uses
+`FILE_FLAG_OPEN_REPARSE_POINT`; directory and file handles exclude delete
+sharing while in use. Stable device/inode identity is required, and a platform
+that cannot supply it fails the affected scan closed.
 
-The scanner never follows symbolic links, junctions, or other Windows reparse
-points. It also tracks visited directory identities as defense in depth against
-recursive traversal loops.
+These checks close the confirmed race caused by reopening a pathname for
+hashing, but they do not create an atomic filesystem snapshot. Concurrent
+in-place writes may still produce a mixed read if an attacker restores size and
+timestamps before the handle's final metadata check. Kernel-level deception,
+network-filesystem semantics, filesystems that reuse or misreport object
+identity, and transient directory-entry changes restored with their metadata
+remain outside the guarantee. Discovered links and reparse points are excluded,
+and visited directory identities provide additional loop defense.
 
 ## Baseline data flow
 
