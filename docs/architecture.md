@@ -1,10 +1,18 @@
 # IntegrityGuard Architecture
 
-## Milestone 4 components
+## Milestone 5 components
 
-IntegrityGuard currently has four application layers:
+IntegrityGuard currently has six application layers:
 
 ```text
+cli.main()
+        |
+        +-- orchestrates commands, stdout/stderr, and exit status
+        |
+reporting.create_security_report() / save_report() / load_report()
+        |
+        +-- presents and persists sanitized change assessments
+        |
 detector.compare_baseline()
         |
         +-- compares trusted hashes and preserves uncertain states
@@ -38,6 +46,16 @@ contents itself.
 baseline through the existing baseline validation path, validates the scanner
 contract, confirms that both roots refer to the same directory, and returns an
 immutable `ChangeReport`. It performs no baseline update or report-file write.
+
+`reporting.py` converts a `ChangeReport` into an immutable `SecurityReport`,
+renders compact monochrome text, and strictly serializes report schema version
+1. Loading a historical report is a bounded trust-boundary operation. Report
+JSON omits the absolute scan root and raw scanner messages.
+
+`cli.py` is a thin orchestration layer. It parses arguments, calls the existing
+scanner, baseline, detector, and reporting APIs, routes normal output to stdout
+and diagnostics to stderr, and maps assessment state to stable process codes.
+It does not duplicate hashing, traversal, or comparison logic.
 
 ## Result model
 
@@ -137,8 +155,28 @@ requires no unknown records and no excluded paths recorded by the baseline.
 Confirmed changes may still be reported during a partial scan, but the overall
 assessment remains inconclusive.
 
+## CLI and report data flow
+
+```text
+init:   root -> scan -> validated baseline -> exclusive baseline file
+scan:   root + baseline -> scan -> comparison -> text or SecurityReport JSON
+report: saved JSON -> bounded strict validation -> historical text view
+```
+
+The JSON report has one versioned envelope with exact fields. File records are
+grouped by status and sorted by normalized relative path. Counts and overall
+assessment must agree with those records. Unknown records cannot claim a
+trusted current digest. Exception class names are constrained before display,
+and raw exception messages are never serialized.
+
+Report publication applies the same security properties as baseline
+publication: the destination must be outside the monitored root, existing
+targets and link-like paths are rejected, data is flushed before publication,
+and atomic hard-link creation prevents replacement. A saved report is evidence
+from an earlier scan, not a baseline and not a fresh assessment.
+
 ## Deferred components
 
-Baseline authentication and rotation, CLI commands, report serialization,
-background monitoring, and notifications are deliberately not implemented in
-Milestone 4.
+Baseline authentication and rotation, background monitoring, notifications,
+database storage, cloud integrations, and automatic remediation are
+deliberately not implemented in Milestone 5.

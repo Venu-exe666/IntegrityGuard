@@ -2,9 +2,10 @@
 
 ## Scope and protected assets
 
-Milestones 3 and 4 record SHA-256 fingerprints and compare them with fresh
-scanner output. The protected assets are the monitored file contents, the
-accuracy of scan and comparison results, and the stored baseline.
+Milestones 3 through 5 record SHA-256 fingerprints, compare them with fresh
+scanner output, and present the result through a CLI and saved reports. The
+protected assets are the monitored file contents, assessment accuracy, the
+stored baseline, and exported report records.
 
 IntegrityGuard reads monitored files but does not modify, execute, upload, or
 delete them. It makes no network requests and does not elevate privileges.
@@ -15,6 +16,12 @@ The monitored filesystem is untrusted while scanning. Files and directories
 may disappear, change, or become inaccessible. A baseline JSON file is also
 untrusted when loaded and must pass size, syntax, schema, type, timestamp, hash,
 ordering, uniqueness, and relative-path validation.
+
+Saved reports cross another trust boundary. Their loader uses a fixed size
+limit, rejects duplicate keys and unknown fields, validates category semantics,
+and checks that counts and assessment flags agree. It also rejects terminal
+control data in exception type labels. Viewing a saved report never rescans the
+filesystem and is clearly labeled historical.
 
 A baseline can be created only from a `ScanReport` with no errors and with a
 trusted hash and complete metadata for every discovered regular file. Skipped
@@ -47,6 +54,10 @@ access only to trusted administrators or the IntegrityGuard service account.
 - Failed scans and skipped subtrees cannot silently create confirmed deletions.
 - Untrusted current digests are never used for content classification.
 - Unrelated scan roots cannot be compared accidentally.
+- JSON stdout contains no banners or diagnostics that would corrupt parsing.
+- Report files omit monitored absolute roots and raw exception messages.
+- Existing report destinations and report paths inside the root are rejected.
+- Invalid or inconsistent historical reports are rejected before rendering.
 
 ## Conservative change assessment
 
@@ -77,6 +88,13 @@ unsupported filesystem IntegrityGuard fails instead of falling back to a
 non-atomic or overwrite-capable method. Temporary cleanup is best effort when
 the operating system itself denies cleanup.
 
+Report files are not authenticated. Anyone able to replace a report can create
+a different internally valid history, and reports may still reveal relative
+filenames, hashes, sizes, timestamps, and operational security findings. Store
+them with suitable ACLs and retention rules. Terminal output is monochrome and
+validated, but shell redirection and surrounding automation remain the
+operator's responsibility.
+
 Reading monitored files may allow the operating system to update access-time
 metadata. Scanner pre/post checks cannot detect every adversarial change that
 restores identity, size, and timestamps before verification.
@@ -106,8 +124,8 @@ prove that the host is uncompromised. An attacker might alter excluded data,
 tamper with an unauthenticated baseline, evade a non-atomic scan, operate only
 in memory, or compromise components below the scanner's trust boundary.
 
-## Explicit non-goals for Milestone 4
+## Explicit non-goals for Milestone 5
 
-Milestone 4 does not detect malware, prevent file changes, authenticate or
-rotate baselines, update baselines automatically, provide a CLI, export report
-files, or perform background monitoring and notifications.
+Milestone 5 does not detect malware, prevent or remediate file changes,
+authenticate or rotate baselines, update baselines automatically, perform
+background monitoring, send notifications, or use databases or cloud services.

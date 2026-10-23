@@ -1,4 +1,4 @@
-# IntegrityGuard Learning Notes: Milestones 1 through 4
+# IntegrityGuard Learning Notes: Milestones 1 through 5
 
 ## SHA-256
 
@@ -254,3 +254,82 @@ attacker may restore observable state between checks. A compromised or replaced
 baseline can make malicious content appear expected. Excluded links are not
 examined, and file-integrity monitoring does not detect memory-only activity or
 decide whether unchanged content is safe.
+
+## Command-line interface design
+
+`argparse` subcommands give each workflow its own required inputs and help. The
+top-level parser selects `init`, `scan`, or `report`, then dispatches to a small
+handler. This keeps interface concerns separate from hashing, traversal,
+storage, and comparison. The command layer composes existing APIs instead of
+reimplementing them.
+
+Paths with spaces and Unicode characters should be passed as individual
+arguments by the shell. `pathlib.Path` carries those values without manual
+separator manipulation. The library still performs its own canonicalization
+and trust-boundary checks; argument parsing alone does not make a path safe.
+
+## Standard output and standard error
+
+Standard output is the command's result. Standard error is for diagnostics.
+That distinction matters when another program parses `--format json`: a warning
+or banner mixed into stdout would make otherwise valid JSON unusable. Expected
+input, storage, or filesystem failures therefore produce concise stderr text
+without a traceback, while successful JSON stdout contains exactly one JSON
+document.
+
+Human text favors quick triage: summary counts, changed paths, scan errors, and
+an integrity assessment. Large unchanged lists are suppressed unless
+`--verbose` is requested. Machine JSON favors deterministic field names,
+ordering, types, and schema validation.
+
+## Process exit codes
+
+Exit status is another machine interface. IntegrityGuard uses 0 for a
+successful clean assessment, 1 for conclusive detected changes, 2 when a fresh
+assessment is incomplete or inconclusive, and 3 for argument or operational
+failure. Automation must distinguish 1 from 3: detected changes are a valid
+security result, not a crashed command.
+
+A successful `report` view returns 0 even if the historical data records
+changes. The viewer validated and displayed a file; it did not make a fresh
+claim about the monitored directory.
+
+## Versioned security reports
+
+Report schema version 1 groups sorted records into added, deleted, modified,
+unchanged, and unknown categories. Counts are redundant on purpose: strict
+loading recalculates them and rejects disagreement. The loader also verifies
+hash/status semantics, UTC timestamps, normalized paths, uniqueness,
+completeness, conclusiveness, and the overall assessment.
+
+Schemas should fail closed. Silently accepting unknown fields, duplicate JSON
+keys, malformed digests, or future schema versions can cause different tools
+to interpret the same bytes differently. Bounded reads and exact validation
+limit resource consumption and ambiguity at this trust boundary.
+
+## Historical reports versus baselines
+
+A baseline is trusted comparison input describing an expected file state. A
+report is output describing one assessment. They are deliberately separate
+schemas and are not interchangeable. Loading a report never updates a baseline,
+and viewing one never scans the filesystem.
+
+Reports omit the absolute monitored root and raw exception messages because
+those can disclose host layout or sensitive details. Relative filenames,
+hashes, sizes, timestamps, and security findings may still be sensitive.
+Reports therefore need access controls and retention policy, and—like current
+baselines—are not authenticated in Milestone 5.
+
+## Safe report publication
+
+Exported reports use create-only atomic publication outside the monitored root.
+Rejecting an existing target avoids accidental evidence destruction. Keeping
+reports outside the root prevents a scan from detecting its own output.
+Rejecting link-like destination components reduces redirection risk, while a
+same-directory temporary file plus exclusive hard-link publication avoids a
+partially written final name.
+
+These protections have limits. Hard-link support is filesystem-dependent, and
+portable path checks cannot eliminate every Windows time-of-check/time-of-use
+race against an attacker who can modify the report directory. Restrictive ACLs
+remain essential.
