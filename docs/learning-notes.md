@@ -1,4 +1,4 @@
-# IntegrityGuard Learning Notes: Milestones 1 through 3
+# IntegrityGuard Learning Notes: Milestones 1 through 4
 
 ## SHA-256
 
@@ -205,3 +205,52 @@ risk, but portable Python cannot turn all Windows path operations into one
 transaction. An attacker who can write to the baseline directory may still
 race those checks. Restricting directory write access is therefore part of the
 security model, not an optional deployment detail.
+
+## Comparing a baseline with a current scan
+
+The detector matches baseline and current records by normalized relative path.
+A trusted current-only path is added. A baseline-only path is deleted only when
+its directory scope was enumerated successfully. Paths found in both states are
+modified when their trusted SHA-256 digests differ and unchanged when the
+digests match.
+
+Timestamps and sizes are supporting metadata. They can reveal useful context,
+but a timestamp-only or size-only difference does not prove a content change.
+Conversely, two different byte sequences can have the same size. IntegrityGuard
+therefore bases content classification on the digest.
+
+## Unknown is a security result
+
+`unknown` does not mean unchanged, changed, or deleted. It means the available
+evidence cannot safely establish the current state. Examples include a failed
+file read, a file changing during hashing, an inaccessible directory, or a
+regular baseline path becoming a skipped link.
+
+Reporting unknown explicitly prevents a dangerous shortcut: treating every
+path missing from a partial scan as deleted. Directory-scoped errors cover all
+baseline descendants because the scanner cannot prove that it enumerated those
+names. Errors elsewhere do not erase trustworthy evidence for unaffected
+paths, but they do make the overall scan incomplete.
+
+## Completeness and conclusiveness
+
+Scan completeness describes whether current traversal and hashing finished
+without errors, skipped paths, or untrusted results. Assessment conclusiveness
+also considers baseline exclusions and unknown records. A report can contain a
+confirmed modification and still be inconclusive about other paths.
+
+A clean result requires both a conclusive assessment and no confirmed added,
+deleted, or modified records. This is deliberately stricter than merely having
+an empty `modified` list.
+
+## False positives and false negatives
+
+Using SHA-256 rather than timestamps avoids many false modification reports
+caused by metadata-only updates. Scoped unknown states prevent false deletion
+reports during partial traversal.
+
+False negatives remain possible. Scanning is not an atomic snapshot; an
+attacker may restore observable state between checks. A compromised or replaced
+baseline can make malicious content appear expected. Excluded links are not
+examined, and file-integrity monitoring does not detect memory-only activity or
+decide whether unchanged content is safe.

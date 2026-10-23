@@ -1,10 +1,14 @@
 # IntegrityGuard Architecture
 
-## Milestone 3 components
+## Milestone 4 components
 
-IntegrityGuard currently has three application layers:
+IntegrityGuard currently has four application layers:
 
 ```text
+detector.compare_baseline()
+        |
+        +-- compares trusted hashes and preserves uncertain states
+        |
 baseline.create_baseline() / save_baseline() / load_baseline()
         |
         +-- consumes and validates ScanReport records
@@ -29,6 +33,11 @@ calls the existing hashing function rather than duplicating hashing logic.
 strict JSON validation, size-limited loading, storage-path policy, and atomic
 exclusive creation. It consumes scanner results but never reads monitored file
 contents itself.
+
+`detector.py` is a read-only comparison layer. It validates an in-memory
+baseline through the existing baseline validation path, validates the scanner
+contract, confirms that both roots refer to the same directory, and returns an
+immutable `ChangeReport`. It performs no baseline update or report-file write.
 
 ## Result model
 
@@ -99,8 +108,37 @@ Windows reparse points. The resolved destination is compared with the resolved
 monitored root using Windows-aware case normalization. The destination must be
 outside that root and must not already exist.
 
+## Change detection model
+
+The detector joins `BaselineFile` and `FileScanResult` records by normalized
+relative path. Windows comparisons are case-insensitive while stored display
+paths remain unchanged. Results are sorted deterministically.
+
+```text
+baseline only + fully enumerated scope       -> deleted
+baseline only + failed/skipped scope         -> unknown
+current only + trusted digest                -> added
+both + different trusted digest              -> modified
+both + equal trusted digest                  -> unchanged
+current record without a trusted digest      -> unknown
+```
+
+Size and timestamp differences are exposed as `metadata_changed`, but content
+is marked modified only when trusted SHA-256 values differ.
+
+Scanner error kinds define conservative scopes. Root errors cover every path;
+directory-access, directory-loop, and entry-inspection errors cover a path and
+its descendants; file read/change errors cover the exact file. Current skipped
+links and reparse points similarly cover their complete relative subtree.
+
+`scan_complete` requires no scanner errors, no skipped current paths, and a
+trusted result for every current file. `assessment_conclusive` additionally
+requires no unknown records and no excluded paths recorded by the baseline.
+Confirmed changes may still be reported during a partial scan, but the overall
+assessment remains inconclusive.
+
 ## Deferred components
 
-Change comparison, baseline authentication, rotation, reporting formats, CLI
-commands, background monitoring, and notifications are deliberately not
-implemented in Milestone 3.
+Baseline authentication and rotation, CLI commands, report serialization,
+background monitoring, and notifications are deliberately not implemented in
+Milestone 4.

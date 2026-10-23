@@ -6,10 +6,10 @@ being developed incrementally as a command-line application.
 
 ## Current status
 
-Milestones 1 through 3 provide streaming SHA-256 hashing, a reusable recursive
-directory scanner, and secure versioned JSON baseline storage. Change
-detection, report formats, the CLI, and background monitoring are planned but
-are **not yet implemented**.
+Milestones 1 through 4 provide streaming SHA-256 hashing, a reusable recursive
+directory scanner, secure versioned JSON baseline storage, and conservative
+file-integrity change detection. Report exporting, the CLI, and background
+monitoring are planned but are **not yet implemented**.
 
 The hashing function:
 
@@ -39,6 +39,16 @@ Baseline management:
 - enforces a 16 MiB default input limit;
 - requires storage outside the monitored directory; and
 - creates new files atomically without replacing an existing baseline.
+
+Change detection:
+
+- matches files using normalized relative paths;
+- compares trusted SHA-256 values rather than timestamps alone;
+- classifies files as added, deleted, modified, unchanged, or unknown;
+- keeps metadata-only differences visible without calling them modifications;
+- preserves structured scanner errors in the result;
+- prevents failed or skipped subtrees from producing false deletions; and
+- rejects comparisons between unrelated scan roots.
 
 ## Requirements
 
@@ -112,6 +122,25 @@ loaded = load_baseline("C:/integrity-data/baseline.json")
 `save_baseline()` never overwrites its destination. Replace or rotation policy
 must be an explicit future operation rather than an accidental side effect.
 
+Compare a validated baseline with a fresh scan:
+
+```python
+from integrityguard.detector import compare_baseline
+from integrityguard.scanner import scan_directory
+
+current_scan = scan_directory("C:/monitored")
+changes = compare_baseline(loaded, current_scan)
+
+for change in changes.modified:
+    print(change.relative_path, change.previous_sha256, change.current_sha256)
+for unknown in changes.unknown:
+    print(unknown.relative_path, unknown.unknown_reason)
+```
+
+`changes.is_clean` is true only when the assessment is conclusive and no
+added, deleted, or modified files were confirmed. A scan containing errors or
+skipped paths is never presented as completely clean.
+
 ## Project layout
 
 ```text
@@ -126,9 +155,9 @@ docs/security-model.md
 
 ## Roadmap
 
-The next milestone will compare new scans with trusted baselines to classify
-added, deleted, modified, and unchanged files. Later milestones will add report
-formats, a CLI, and optional monitoring.
+The next milestone can add user-facing CLI commands and report presentation on
+top of the existing library APIs. Report file exporting, optional monitoring,
+and notifications remain future work.
 
 ## Security limitations
 
@@ -142,6 +171,11 @@ replace both a stored digest and its related metadata. Baseline files therefore
 need operating-system access controls and backups. Digital signatures or an
 HMAC with separately protected keys are future enhancements, not implemented
 features.
+
+A clean comparison is evidence about the files successfully scanned under the
+configured policy. It is not proof that a system is uncompromised, malware-free,
+or free from changes hidden by filesystem races, excluded paths, or a tampered
+baseline.
 
 ## License
 
