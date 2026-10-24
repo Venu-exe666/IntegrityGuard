@@ -1,4 +1,4 @@
-# IntegrityGuard Learning Notes: Milestones 1 through 7.2
+# IntegrityGuard Learning Notes: Milestones 1 through 7.3
 
 ## SHA-256
 
@@ -65,6 +65,27 @@ do not depend on a developer's personal files, and are cleaned up by the test
 framework. Tests reduce regressions, but passing tests are evidence for the
 tested behavior rather than proof that software is free of defects or secure
 in every environment.
+
+## Cross-platform CI as a security control
+
+A local pass covers only one interpreter, operating system, permission model,
+and filesystem. The M7.3 GitHub Actions matrix defines four independent jobs:
+Ubuntu and Windows, each on Python 3.12 and 3.13. Every job installs the package
+before testing, checks the installed CLI, and asks pytest to print skip reasons.
+`fail-fast: false` lets all platform results finish so one early failure does
+not hide evidence from the other jobs.
+
+Workflow security matters too. Third-party actions execute code in the job, so
+the workflow uses official actions pinned to full commit identifiers, grants
+only read access to repository contents, and does not persist checkout
+credentials. Timeouts constrain stuck jobs. These controls reduce supply-chain
+and resource risk; they do not make a hosted runner equivalent to production.
+
+A skip is not a pass. Windows symbolic-link creation may require Developer Mode
+or a privilege unavailable to the runner account. Tests probe that capability,
+state the reason when absent, and retain separate real-junction coverage. POSIX
+descriptor and symlink tests are skipped on Windows because Windows uses a
+different handle API, not because equivalent protection is unnecessary.
 
 ## Recursive directory traversal
 

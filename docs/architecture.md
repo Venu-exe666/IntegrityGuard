@@ -1,6 +1,6 @@
 # IntegrityGuard Architecture
 
-## Milestone 7.2 components
+## Milestone 7.3 components
 
 IntegrityGuard currently has seven application layers:
 
@@ -64,6 +64,12 @@ Scan-error fingerprints include the safe category, permitted relative path,
 exception label, errno, and winerror. Numeric codes affect live deduplication
 but are intentionally not added to report schema version 1.
 
+`.github/workflows/ci.yml` is a development control rather than a runtime
+layer. Four independent jobs install the package and run the same tests on
+Ubuntu and Windows with Python 3.12 and 3.13. Each job also checks dependency
+consistency, imports, and the installed console entry point. The workflow has
+read-only repository contents permission and no application secrets.
+
 ## Result model
 
 `scan_directory()` returns an immutable `ScanReport` containing:
@@ -107,6 +113,15 @@ network-filesystem semantics, filesystems that reuse or misreport object
 identity, and transient directory-entry changes restored with their metadata
 remain outside the guarantee. Discovered links and reparse points are excluded,
 and visited directory identities provide additional loop defense.
+
+Platform-focused tests mirror that split. POSIX jobs record real `os.open()`
+and `os.stat()` calls to assert descriptor-relative names, `O_NOFOLLOW`,
+`O_DIRECTORY`, and non-following metadata reads, then use real symlinks to
+verify that traversal cannot escape the root. Windows jobs exercise real
+directory handles and a temporary junction, while privilege-dependent symlink
+tests explicitly skip when the runner cannot create the fixture. Shared tests
+cover identity substitutions, parent replacement, handle-bound hashing,
+mutation, partial-scan classification, and resource ceilings.
 
 ## Baseline data flow
 
@@ -227,4 +242,4 @@ Other unexpected exceptions propagate rather than being hidden.
 
 Baseline authentication and rotation, event-driven filesystem watching,
 background services, notifications, database storage, cloud integrations, and
-automatic remediation are deliberately not implemented in Milestone 7.2.
+automatic remediation are deliberately not implemented in Milestone 7.3.

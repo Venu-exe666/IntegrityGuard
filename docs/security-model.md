@@ -2,7 +2,7 @@
 
 ## Scope and protected assets
 
-Milestones 3 through 7.2 record SHA-256 fingerprints, compare them with fresh
+Milestones 3 through 7.3 record SHA-256 fingerprints, compare them with fresh
 scanner output, present results through a CLI and saved reports, and repeat
 those comparisons in a foreground polling session. The protected assets are
 the monitored file contents, assessment accuracy, the stored baseline, exported
@@ -69,6 +69,8 @@ access only to trusted administrators or the IntegrityGuard service account.
 - A root that disappears during monitoring produces UNKNOWN states rather than
   false deletions.
 - Foreground synchronous scans cannot overlap or leave worker threads behind.
+- Cross-platform CI uses read-only repository permission and no application
+  secrets or privileged workflow steps.
 
 ## Conservative change assessment
 
@@ -118,6 +120,14 @@ delay the next duration check. Directory-name collection is bounded only when
 an entry ceiling is configured, and memory use grows up to that ceiling. The
 default remains unlimited for compatibility, so deployments should select
 limits appropriate to their tree and storage performance.
+
+CI reduces platform-regression risk but does not prove security. Hosted runner
+filesystems, kernels, permissions, and timing differ from production systems.
+Windows symlink tests execute only when the runner account can create symbolic
+links; a reported skip leaves that real-object behavior unverified for that
+job. Junction tests provide separate reparse-point evidence but are not a
+substitute for every reparse tag or filesystem implementation. POSIX tests on
+Ubuntu do not establish behavior for every Unix or network filesystem.
 
 Reading monitored files may allow the operating system to update access-time
 metadata. The scanner requires stable object identity and rejects a pathname
@@ -170,9 +180,9 @@ prove that the host is uncompromised. An attacker might alter excluded data,
 tamper with an unauthenticated baseline, evade a non-atomic scan, operate only
 in memory, or compromise components below the scanner's trust boundary.
 
-## Explicit non-goals for Milestone 7.2
+## Explicit non-goals for Milestone 7.3
 
-Milestone 7.2 does not provide real-time event monitoring, detect malware,
+Milestone 7.3 does not provide real-time event monitoring, detect malware,
 prevent or remediate file changes, authenticate or rotate baselines, update
 baselines automatically, install a background service, send notifications, or
 use databases, telemetry, external logging, or cloud services.

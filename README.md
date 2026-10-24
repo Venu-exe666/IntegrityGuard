@@ -6,13 +6,15 @@ being developed incrementally as a command-line application.
 
 ## Current status
 
-Milestones 1 through 6 plus Milestones 7.1 and 7.2 provide streaming SHA-256 hashing, a reusable recursive
-directory scanner, secure versioned JSON baseline storage, conservative
+Milestones 1 through 6 plus Milestones 7.1 through 7.3 provide streaming
+SHA-256 hashing, a reusable recursive directory scanner, secure versioned JSON
+baseline storage, conservative
 file-integrity change detection, a user-facing CLI with versioned reports, and
 foreground periodic monitoring. The 7.x hardening adds handle-bound scanning,
 strict report-state validation, optional scan resource ceilings, and structured
-watch-error deduplication. Background services and notifications are **not
-implemented**.
+watch-error deduplication. Milestone 7.3 adds a least-privilege GitHub Actions
+matrix and explicit POSIX/Windows security suites. Background services and
+notifications are **not implemented**.
 
 The hashing function:
 
@@ -34,7 +36,7 @@ The directory scanner:
   found during inspection;
 - hashes an already-open file object and binds metadata checks to that handle;
   and
-- rejects detected identity substitutions and changes during hashing.
+- rejects detected identity substitutions and changes during hashing; and
 - optionally limits discovered entries, cumulative bytes hashed, and elapsed
   scan time; a reached limit is a structured incomplete-scan error.
 
@@ -104,9 +106,38 @@ Run the tests:
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
+On Linux or macOS, the equivalent test command is:
+
+```bash
+python -m pytest -v -ra
+```
+
 The editable installation creates an `integrityguard` console command. Without
 activating the environment, invoke it explicitly as
 `.\.venv\Scripts\integrityguard.exe`.
+
+## Continuous integration
+
+The workflow in `.github/workflows/ci.yml` is configured for these jobs:
+
+| Runner | Python |
+| --- | --- |
+| `ubuntu-latest` | 3.12 |
+| `ubuntu-latest` | 3.13 |
+| `windows-latest` | 3.12 |
+| `windows-latest` | 3.13 |
+
+It runs on pushes to `main`, pull requests targeting `main`, and manual
+dispatch. Each job installs the project with its test extra, verifies package
+imports and dependencies, exercises installed CLI help/version behavior, and
+runs the complete pytest suite with skip reasons. The workflow grants only
+`contents: read`, persists no checkout credential, uses no project secrets or
+project-specific external services, and has a 20-minute job timeout.
+
+This matrix is configuration until GitHub-hosted jobs actually pass. Local
+Windows results do not establish Ubuntu or Python 3.12 behavior. Recommended
+branch protection should require all four matrix jobs before merging to
+`main`; repository settings are not managed by this project.
 
 ## Command-line workflow
 
@@ -272,7 +303,10 @@ sensitive security records despite these omissions.
 Common failures are sent to standard error without a traceback. If publication
 fails on a filesystem without hard-link support, choose an NTFS directory that
 supports hard links. Creating symbolic-link test fixtures on Windows may require
-Developer Mode or elevated privileges; those tests skip when unavailable.
+Developer Mode or elevated privileges; those tests probe support and report an
+explicit skip when unavailable. Real Windows junction coverage does not rely on
+symlink privilege and uses temporary directories only. A skipped privileged
+test is an unverified behavior, not evidence that the protection passed.
 
 ## Minimal usage
 
@@ -354,8 +388,9 @@ docs/security-model.md
 
 ## Roadmap
 
-Milestones 7.1 and 7.2 add handle-bound scanner hashing, adversarial race tests,
-strict report validation, resource ceilings, and safer watch deduplication.
+Milestones 7.1 through 7.3 add handle-bound scanner hashing, adversarial race
+tests, strict report validation, resource ceilings, safer watch deduplication,
+and cross-platform CI/security-test configuration.
 Baseline authentication or
 rotation, background service operation, notifications, and release engineering
 remain future work.
