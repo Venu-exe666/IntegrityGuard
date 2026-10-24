@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -8,7 +9,8 @@ import pytest
 
 import integrityguard.scanner as scanner_module
 from integrityguard.baseline import create_baseline
-from integrityguard.detector import ChangeStatus, compare_baseline
+from integrityguard.detector import ChangeStatus, UnknownReason, compare_baseline
+from integrityguard.reporting import create_security_report
 from integrityguard.scanner import ScanErrorKind, ScanStatus, scan_directory
 
 
@@ -126,6 +128,8 @@ def test_symlink_substitution_is_rejected_without_hashing_target(
     backup = tmp_path / "original.bin"
     target.write_bytes(b"inside")
     outside.write_bytes(b"outside")
+    baseline = create_baseline(scan_directory(root))
+    root_info = root.stat()
     probe = tmp_path / "symlink-probe"
     try:
         probe.symlink_to(outside)
@@ -155,6 +159,7 @@ def test_symlink_substitution_is_rejected_without_hashing_target(
         finally:
             target.unlink(missing_ok=True)
             os.replace(backup, target)
+            os.utime(root, ns=(root_info.st_atime_ns, root_info.st_mtime_ns))
 
     def record_hash(file_handle: object) -> str:
         nonlocal hash_was_called
@@ -165,11 +170,49 @@ def test_symlink_substitution_is_rejected_without_hashing_target(
     monkeypatch.setattr(scanner_module, "sha256_stream", record_hash)
 
     report = scan_directory(root)
+    changes = compare_baseline(baseline, report)
+    security_report = create_security_report(changes)
 
-    assert report.files[0].status is ScanStatus.CHANGED_DURING_SCAN
+    assert len(report.files) == 1
     assert report.files[0].sha256 is None
     assert not hash_was_called
     assert target.read_bytes() == b"inside"
+    assert outside.read_bytes() == b"outside"
+    file_errors = [
+        error for error in report.errors if error.relative_path == "watched.bin"
+    ]
+    assert len(file_errors) == 1
+    error = file_errors[0]
+    assert error.relative_path == "watched.bin"
+    if os.name == "nt":
+        assert report.files[0].status is ScanStatus.CHANGED_DURING_SCAN
+        assert error.kind is ScanErrorKind.FILE_CHANGED
+        assert error.exception_type == "_ObjectChangedError"
+        assert error.errno is None
+    else:
+        assert report.files[0].status is ScanStatus.ERROR
+        assert error.kind is ScanErrorKind.FILE_ACCESS
+        assert error.exception_type == "OSError"
+        assert error.errno == errno.ELOOP
+
+    issues = [
+        issue
+        for issue in security_report.scan_issues
+        if issue.relative_path == "watched.bin"
+    ]
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.relative_path == error.relative_path
+    assert issue.kind is error.kind
+    assert issue.exception_type == error.exception_type
+    assert not changes.scan_complete
+    assert not changes.assessment_conclusive
+    assert not changes.is_clean
+    assert changes.deleted == ()
+    assert len(changes.unknown) == 1
+    assert changes.unknown[0].relative_path == "watched.bin"
+    assert changes.unknown[0].status is ChangeStatus.UNKNOWN
+    assert changes.unknown[0].unknown_reason is UnknownReason.UNTRUSTED_RESULT
 
 
 def test_parent_directory_substitution_makes_comparison_inconclusive(
