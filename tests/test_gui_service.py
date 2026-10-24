@@ -25,7 +25,7 @@ from integrityguard.gui_service import (
     default_app_data_dir,
     result_rows,
 )
-from integrityguard.monitoring import MonitoringFindingKind
+from integrityguard.monitoring import MonitoringFindingKind, MonitoringScanEvent
 from integrityguard.scanner import (
     ScanError,
     ScanErrorKind,
@@ -320,3 +320,48 @@ def test_gui_monitoring_state_transitions_and_stale_session_rejection() -> None:
     assert control.state is GuiMonitoringState.RUNNING
     assert control.finish(second_id, failed=True)
     assert control.state is GuiMonitoringState.ERROR
+
+
+def test_gui_manual_scan_lifecycle_is_balanced_on_failure(tmp_path: Path) -> None:
+    root = tmp_path / "monitored"
+    root.mkdir()
+    events: list[MonitoringScanEvent] = []
+
+    def fail(path: object) -> NoReturn:
+        raise RuntimeError("test scan failure")
+
+    service = GuiService(tmp_path / "app-data", scan_function=fail)
+
+    with pytest.raises(RuntimeError, match="test scan failure"):
+        service.create_for_root(root, on_scan_event=events.append)
+
+    assert events == [
+        MonitoringScanEvent.STARTED,
+        MonitoringScanEvent.FINISHED,
+    ]
+
+
+def test_gui_monitoring_forwards_scan_lifecycle_events(tmp_path: Path) -> None:
+    root = tmp_path / "monitored"
+    root.mkdir()
+    (root / "file.txt").write_bytes(b"trusted")
+    service = _service(tmp_path / "app-data")
+    service.create_for_root(root)
+    stop_event = Event()
+    events: list[MonitoringScanEvent] = []
+
+    def receive_cycle(cycle) -> None:
+        stop_event.set()
+
+    service.monitor_root(
+        root,
+        interval=60,
+        stop_event=stop_event,
+        on_cycle=receive_cycle,
+        on_scan_event=events.append,
+    )
+
+    assert events == [
+        MonitoringScanEvent.STARTED,
+        MonitoringScanEvent.FINISHED,
+    ]

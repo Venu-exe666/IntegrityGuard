@@ -1,6 +1,6 @@
 # IntegrityGuard Architecture
 
-## Version 2.0 GUI Phase 2 components
+## Version 2.0 GUI Phase 3 components
 
 IntegrityGuard currently has seven application layers:
 
@@ -48,6 +48,28 @@ delayed messages from an older session are ignored. Closing the window requests
 cooperative shutdown and waits for an in-progress scan to finish before Tk is
 destroyed, so the monitoring worker does not silently outlive the GUI.
 Live alert history is bounded to the newest 1,000 table rows.
+
+The approved Phase 3 interface uses a dark navy sidebar and dashboard modeled
+on the final design reference. A controlled ttk `clam` theme provides
+consistent styling for panels, focusable buttons, readonly fields, comboboxes,
+progress feedback, Treeview headings and rows, and scrollbars on Windows. The
+sidebar exposes only the implemented Monitoring dashboard; Settings, Reports,
+and History are visibly disabled and marked Coming Soon. The grid layout keeps workflow controls
+visible while assigning resizable space to the results table. The selected path
+remains keyboard focusable and horizontally accessible, and the results table
+scrolls in both directions. Windows startup requests system-DPI-aware sizing
+through the standard library when the host API is available.
+
+An optional scan-lifecycle callback in `monitor_directory()` reports only
+STARTED and FINISHED boundaries and is backward-compatible with the CLI.
+`GuiService` provides the same balanced notification around one-shot scans.
+Worker callbacks enqueue lifecycle messages; only the Tk main thread changes
+the custom Canvas scanner animation. Its moving beam and pulse are grid-removed
+while idle, between monitoring cycles, after errors, and immediately when Stop
+is requested. A separate low-key Canvas signal labels an enabled polling
+session as MONITORING. It remains independent of scan lifecycle progress and is
+cancelled for Stopping, Stopped, and Error states. Both animations use bounded
+Tk `after()` callbacks and create no worker threads.
 
 `GuiMonitoringControl` is a presentation-neutral state machine for Running,
 Stopping, Stopped, and Error states. It owns a `threading.Event` for the current

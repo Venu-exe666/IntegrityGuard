@@ -78,6 +78,13 @@ class AlertEvent(StrEnum):
     RESOLVED = "resolved"
 
 
+class MonitoringScanEvent(StrEnum):
+    """Lifecycle events for one polling scan."""
+
+    STARTED = "started"
+    FINISHED = "finished"
+
+
 @dataclass(frozen=True, slots=True)
 class MonitoringAlert:
     """One deterministic, sanitized monitoring alert."""
@@ -132,6 +139,7 @@ class _Finding:
 
 
 CycleHandler = Callable[[MonitoringCycle], object]
+ScanEventHandler = Callable[[MonitoringScanEvent], object]
 
 
 def validate_interval(value: object) -> float:
@@ -165,6 +173,7 @@ def monitor_directory(
     on_cycle: CycleHandler | None = None,
     scan_limit: int | None = None,
     stop_event: Event | None = None,
+    on_scan_event: ScanEventHandler | None = None,
 ) -> MonitoringSession:
     """Repeatedly compare foreground scans with one unchanged baseline.
 
@@ -175,6 +184,8 @@ def monitor_directory(
     ``stop_event`` makes interval waits interruptible. A stop requested during
     a scan is honored after that scan and its cycle callback finish safely.
     Existing callers that omit it continue to use ``wait_function`` unchanged.
+    ``on_scan_event`` is notified immediately before and after each scan; no
+    events are emitted while the monitor is waiting between polling cycles.
     """
     polling_interval = validate_interval(interval)
     if scan_limit is not None and (
@@ -201,7 +212,15 @@ def monitor_directory(
             interrupted = True
             break
         try:
-            scan = _perform_scan(root_path, scan_function)
+            scan_notification_started = False
+            try:
+                if on_scan_event is not None:
+                    on_scan_event(MonitoringScanEvent.STARTED)
+                    scan_notification_started = True
+                scan = _perform_scan(root_path, scan_function)
+            finally:
+                if on_scan_event is not None and scan_notification_started:
+                    on_scan_event(MonitoringScanEvent.FINISHED)
             if status.completed_scans == 0:
                 _reject_invalid_startup_root(scan)
             report = compare_baseline(baseline, scan)

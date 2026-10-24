@@ -20,10 +20,11 @@ notifications are **not implemented**. The package is not published to PyPI;
 the repository source and locally built distributions are the installation
 sources until an explicit publication decision is made.
 
-The `v2.0-development` branch includes GUI Phase 2: a Windows-focused
-Tkinter/ttk dashboard with cooperative periodic monitoring. It calls the
-existing scanner, baseline, detector, and monitoring APIs without
-reimplementing the security engine. The CLI remains available and unchanged.
+The `v2.0-development` branch includes GUI Phase 3: a responsive,
+Windows-focused dark Tkinter/ttk dashboard with cooperative periodic
+monitoring. It calls the existing scanner, baseline, detector, and monitoring
+APIs without reimplementing the security engine. The CLI remains available and
+unchanged.
 
 The hashing function:
 
@@ -129,7 +130,7 @@ tree:
 python -m pip install .\dist\integrityguard-1.0.0-py3-none-any.whl
 ```
 
-## Desktop GUI — Phase 2 live monitoring
+## Desktop GUI — Phase 3 professional dashboard
 
 After installing the project, launch the Windows desktop application with:
 
@@ -148,6 +149,28 @@ fresh scan. The dashboard displays real added, modified, deleted, unknown, and
 unchanged counts; the table lists actionable non-clean results. Filesystem work
 runs outside Tk's UI thread so the window remains responsive, and conflicting
 actions are disabled until the operation finishes.
+
+The approved interface uses a dark navy dashboard with IntegrityGuard branding,
+a persistent Monitoring sidebar, selectable folder-path field, clearly grouped
+workflow actions, color-coded summary cards, a responsive results panel, and
+horizontal and vertical result scrolling. Settings, Reports, and History are
+disabled and marked **Coming Soon** rather than implying unfinished navigation
+works.
+Keyboard users can use **Ctrl+O** to choose a
+folder, **Ctrl+B** to create a baseline, **F5** to scan, **Ctrl+M** to start
+monitoring, and **Ctrl+Shift+M** to stop monitoring. Disabled controls reflect
+the current workflow state and retain native keyboard focus indicators.
+
+The animated scanner beam and pulse exist only while the scanner is actively
+running. The indicator is removed from the layout while idle, between
+monitoring cycles, after completion or error, and as soon as monitoring enters
+Stopping. Progress lifecycle notifications carry no file data and all widget
+changes remain on Tk's main thread.
+
+A separate, subtle animated **MONITORING** signal is shown while periodic
+monitoring is enabled, including between polling cycles. It stops when the
+session is stopping, stopped, or in error. This signal is deliberately separate
+from the scanner animation and does not imply continuous scanning.
 
 When a valid GUI-managed baseline exists, select a 10, 30, or 60 second
 interval and choose **Start Monitoring**. IntegrityGuard performs an immediate
@@ -172,7 +195,7 @@ explicit confirmation and retains the prior file. The integration layer rejects
 a configured baseline directory inside the monitored root. Incomplete scans are
 shown as warnings and cannot become trusted baselines or clean assessments.
 
-Phase 2 does not add installers, auto-start, native filesystem event watching,
+Phase 3 does not add installers, auto-start, native filesystem event watching,
 desktop notifications, or system-tray behavior. The existing `watch` CLI and
 its command-line behavior remain available.
 

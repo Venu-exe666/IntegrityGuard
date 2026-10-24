@@ -23,6 +23,8 @@ from integrityguard.detector import ChangeReport, ChangeStatus, compare_baseline
 from integrityguard.monitoring import (
     CycleHandler,
     MonitoringSession,
+    MonitoringScanEvent,
+    ScanEventHandler,
     monitor_directory,
 )
 from integrityguard.scanner import ScanReport, scan_directory
@@ -209,6 +211,7 @@ class GuiService:
         root: str | PathLike[str],
         *,
         allow_new_version: bool = False,
+        on_scan_event: ScanEventHandler | None = None,
     ) -> BaselineCreationResult:
         """Scan ``root`` and exclusively publish a new trusted baseline version."""
         selected_root = _absolute_root(root)
@@ -219,7 +222,7 @@ class GuiService:
 
         self._reject_storage_inside_root(selected_root)
         self.baseline_directory.mkdir(parents=True, exist_ok=True)
-        scan = self._scan(selected_root)
+        scan = self._scan_once(selected_root, on_scan_event)
         baseline = self._create_baseline(scan)
 
         # Do not let a concurrent first-time creator bypass the GUI's explicit
@@ -237,12 +240,17 @@ class GuiService:
             skipped_path_count=len(baseline.skipped_paths),
         )
 
-    def scan_root(self, root: str | PathLike[str]) -> ScanOutcome:
+    def scan_root(
+        self,
+        root: str | PathLike[str],
+        *,
+        on_scan_event: ScanEventHandler | None = None,
+    ) -> ScanOutcome:
         """Compare a fresh engine scan with the newest baseline for ``root``."""
         selected_root = _absolute_root(root)
         baseline_path = self.latest_baseline_path(selected_root)
         baseline = self._load_baseline(baseline_path)
-        current_scan = self._scan(selected_root)
+        current_scan = self._scan_once(selected_root, on_scan_event)
         report = self._compare(baseline, current_scan)
         return ScanOutcome(
             baseline_path=baseline_path,
@@ -258,6 +266,7 @@ class GuiService:
         interval: float,
         stop_event: Event,
         on_cycle: CycleHandler,
+        on_scan_event: ScanEventHandler | None = None,
     ) -> MonitoringSession:
         """Monitor ``root`` against its newest valid GUI baseline.
 
@@ -274,7 +283,24 @@ class GuiService:
             interval=interval,
             stop_event=stop_event,
             on_cycle=on_cycle,
+            on_scan_event=on_scan_event,
         )
+
+    def _scan_once(
+        self,
+        root: Path,
+        on_scan_event: ScanEventHandler | None,
+    ) -> ScanReport:
+        """Run one scan with balanced optional lifecycle notifications."""
+        notification_started = False
+        try:
+            if on_scan_event is not None:
+                on_scan_event(MonitoringScanEvent.STARTED)
+                notification_started = True
+            return self._scan(root)
+        finally:
+            if on_scan_event is not None and notification_started:
+                on_scan_event(MonitoringScanEvent.FINISHED)
 
     def _baseline_candidates(self, root: str | PathLike[str]) -> tuple[Path, ...]:
         directory = self.baseline_directory

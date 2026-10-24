@@ -26,6 +26,7 @@ from integrityguard.monitoring import (
     InvalidMonitoringIntervalError,
     MonitoringAssessment,
     MonitoringFindingKind,
+    MonitoringScanEvent,
     MonitoringStartupError,
     format_monitoring_cycle,
     format_monitoring_header,
@@ -651,6 +652,49 @@ def test_callers_without_stop_event_still_use_custom_wait_function(
 
     assert waits == [7.0]
     assert session.interrupted is False
+
+
+def test_scan_lifecycle_events_wrap_scan_but_not_cycle_processing(
+    tmp_path: Path,
+) -> None:
+    root, baseline = _baseline_directory(tmp_path)
+    events: list[object] = []
+
+    monitor_directory(
+        root,
+        baseline,
+        on_scan_event=events.append,
+        on_cycle=lambda cycle: events.append("cycle"),
+        scan_limit=1,
+    )
+
+    assert events == [
+        MonitoringScanEvent.STARTED,
+        MonitoringScanEvent.FINISHED,
+        "cycle",
+    ]
+
+
+def test_scan_lifecycle_finishes_when_scan_raises(tmp_path: Path) -> None:
+    root, baseline = _baseline_directory(tmp_path)
+    events: list[MonitoringScanEvent] = []
+
+    def fail(path: Path) -> ScanReport:
+        raise RuntimeError("test scan failure")
+
+    with pytest.raises(RuntimeError, match="test scan failure"):
+        monitor_directory(
+            root,
+            baseline,
+            scan_function=fail,
+            on_scan_event=events.append,
+            scan_limit=1,
+        )
+
+    assert events == [
+        MonitoringScanEvent.STARTED,
+        MonitoringScanEvent.FINISHED,
+    ]
 
 
 def test_monitoring_does_not_write_monitored_files_or_use_network(
