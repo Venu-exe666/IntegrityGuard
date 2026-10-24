@@ -20,8 +20,9 @@ notifications are **not implemented**. The package is not published to PyPI;
 the repository source and locally built distributions are the installation
 sources until an explicit publication decision is made.
 
-The `v2.0-development` branch adds GUI Phase 1: a Windows-focused Tkinter/ttk
-dashboard that calls the existing scanner, baseline, and detector APIs without
+The `v2.0-development` branch includes GUI Phase 2: a Windows-focused
+Tkinter/ttk dashboard with cooperative periodic monitoring. It calls the
+existing scanner, baseline, detector, and monitoring APIs without
 reimplementing the security engine. The CLI remains available and unchanged.
 
 The hashing function:
@@ -128,7 +129,7 @@ tree:
 python -m pip install .\dist\integrityguard-1.0.0-py3-none-any.whl
 ```
 
-## Desktop GUI — Phase 1
+## Desktop GUI — Phase 2 live monitoring
 
 After installing the project, launch the Windows desktop application with:
 
@@ -145,8 +146,25 @@ From a source checkout, it can also be launched directly:
 Choose a folder, create its trusted baseline, and use **Scan Now** to compare a
 fresh scan. The dashboard displays real added, modified, deleted, unknown, and
 unchanged counts; the table lists actionable non-clean results. Filesystem work
-runs on one background thread so Tk remains responsive, and action buttons are
-disabled until the operation finishes.
+runs outside Tk's UI thread so the window remains responsive, and conflicting
+actions are disabled until the operation finishes.
+
+When a valid GUI-managed baseline exists, select a 10, 30, or 60 second
+interval and choose **Start Monitoring**. IntegrityGuard performs an immediate
+scan, then polls after each interval. This is periodic polling, not
+instantaneous operating-system event monitoring. **Stop Monitoring** wakes an
+interval wait immediately; if a scan is already running, that scan finishes
+safely before the worker stops. The window shows Running, Stopping, Stopped, or
+Error state together with completed scans, the last scan time in UTC, and the
+number of active confirmed changes.
+
+The live table consumes the monitoring engine's typed alerts. New added,
+modified, deleted, unknown, scan-error, and skipped-path findings are displayed
+once and are not repeated every cycle while unchanged. Resolved findings are
+shown explicitly; resolution means the prior finding is no longer observed,
+not proof that the system is safe. Incomplete cycles remain visibly
+inconclusive and are never presented as clean. To keep long sessions bounded,
+the table retains the newest 1,000 alert rows.
 
 GUI baselines are stored as create-only versions under
 `%LOCALAPPDATA%\IntegrityGuard\baselines`. Creating another version requires an
@@ -154,8 +172,9 @@ explicit confirmation and retains the prior file. The integration layer rejects
 a configured baseline directory inside the monitored root. Incomplete scans are
 shown as warnings and cannot become trusted baselines or clean assessments.
 
-Phase 1 does not add GUI monitoring, installers, auto-start, notifications, or
-system-tray behavior. The existing `watch` CLI remains the monitoring interface.
+Phase 2 does not add installers, auto-start, native filesystem event watching,
+desktop notifications, or system-tray behavior. The existing `watch` CLI and
+its command-line behavior remain available.
 
 ## Development setup (PowerShell)
 

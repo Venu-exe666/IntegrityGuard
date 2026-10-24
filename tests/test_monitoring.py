@@ -538,6 +538,121 @@ def test_keyboard_interrupt_stops_cleanly(
     assert "Completed scans: 1" in format_monitoring_summary(session)
 
 
+def test_stop_event_interrupts_interval_wait_without_another_scan(
+    tmp_path: Path,
+) -> None:
+    root, baseline = _baseline_directory(tmp_path)
+    stop_event = threading.Event()
+    first_cycle = threading.Event()
+    cycles = []
+    sessions = []
+
+    def run() -> None:
+        sessions.append(
+            monitor_directory(
+                root,
+                baseline,
+                interval=60,
+                stop_event=stop_event,
+                on_cycle=lambda cycle: (cycles.append(cycle), first_cycle.set()),
+            )
+        )
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert first_cycle.wait(timeout=3)
+
+    stop_event.set()
+    worker.join(timeout=3)
+
+    assert not worker.is_alive()
+    assert len(cycles) == 1
+    assert sessions[0].interrupted is True
+    assert sessions[0].status.completed_scans == 1
+
+
+def test_stop_event_during_scan_waits_for_scan_to_finish_safely(
+    tmp_path: Path,
+) -> None:
+    root, baseline = _baseline_directory(tmp_path)
+    stop_event = threading.Event()
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+    cycles = []
+    sessions = []
+
+    def blocking_scan(path: Path) -> ScanReport:
+        scan_started.set()
+        assert release_scan.wait(timeout=3)
+        return scan_directory(path)
+
+    def run() -> None:
+        sessions.append(
+            monitor_directory(
+                root,
+                baseline,
+                interval=60,
+                scan_function=blocking_scan,
+                stop_event=stop_event,
+                on_cycle=cycles.append,
+            )
+        )
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert scan_started.wait(timeout=3)
+
+    stop_event.set()
+    worker.join(timeout=0.05)
+    assert worker.is_alive()
+
+    release_scan.set()
+    worker.join(timeout=3)
+
+    assert not worker.is_alive()
+    assert len(cycles) == 1
+    assert sessions[0].interrupted is True
+    assert sessions[0].status.completed_scans == 1
+
+
+def test_stop_event_does_not_change_normal_scan_limit_completion(
+    tmp_path: Path,
+) -> None:
+    root, baseline = _baseline_directory(tmp_path)
+
+    cycles = []
+    session = monitor_directory(
+        root,
+        baseline,
+        stop_event=threading.Event(),
+        on_cycle=cycles.append,
+        scan_limit=1,
+    )
+
+    assert len(cycles) == 1
+    assert session.interrupted is False
+    assert session.status.completed_scans == 1
+
+
+def test_callers_without_stop_event_still_use_custom_wait_function(
+    tmp_path: Path,
+) -> None:
+    root, baseline = _baseline_directory(tmp_path)
+    waits: list[float] = []
+
+    session = monitor_directory(
+        root,
+        baseline,
+        interval=7,
+        wait_function=waits.append,
+        monotonic=lambda: 1.0,
+        scan_limit=2,
+    )
+
+    assert waits == [7.0]
+    assert session.interrupted is False
+
+
 def test_monitoring_does_not_write_monitored_files_or_use_network(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

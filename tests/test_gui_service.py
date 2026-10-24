@@ -4,20 +4,28 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from typing import NoReturn
 
 import pytest
 
-from integrityguard.baseline import IncompleteScanError, create_baseline
+from integrityguard.baseline import (
+    BaselineError,
+    IncompleteScanError,
+    create_baseline,
+)
 from integrityguard.detector import ChangeStatus, UnknownReason, compare_baseline
 from integrityguard.gui_service import (
     GuiBaselineExistsError,
     GuiBaselineNotFoundError,
     GuiIntegrationError,
+    GuiMonitoringControl,
+    GuiMonitoringState,
     GuiService,
     default_app_data_dir,
     result_rows,
 )
+from integrityguard.monitoring import MonitoringFindingKind
 from integrityguard.scanner import (
     ScanError,
     ScanErrorKind,
@@ -229,3 +237,86 @@ def test_unknown_change_becomes_an_unknown_gui_row(tmp_path: Path) -> None:
     assert rows[0].relative_path == "file.txt"
     assert rows[0].status is ChangeStatus.UNKNOWN
     assert rows[0].detail == UnknownReason.UNTRUSTED_RESULT.value
+
+
+def test_gui_monitoring_uses_latest_baseline_and_typed_alerts(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "monitored"
+    root.mkdir()
+    target = root / "file.txt"
+    target.write_bytes(b"trusted")
+    service = _service(tmp_path / "app-data")
+    service.create_for_root(root)
+    target.write_bytes(b"changed")
+    stop_event = Event()
+    cycles = []
+
+    def receive_cycle(cycle) -> None:
+        cycles.append(cycle)
+        stop_event.set()
+
+    session = service.monitor_root(
+        root,
+        interval=60,
+        stop_event=stop_event,
+        on_cycle=receive_cycle,
+    )
+
+    assert session.interrupted is True
+    assert session.status.completed_scans == 1
+    assert len(cycles) == 1
+    assert cycles[0].new_alerts[0].kind is MonitoringFindingKind.MODIFIED
+
+
+def test_invalid_gui_baseline_stops_before_monitoring(tmp_path: Path) -> None:
+    root = tmp_path / "monitored"
+    root.mkdir()
+    (root / "file.txt").write_bytes(b"trusted")
+    monitor_called = False
+
+    def unexpected_monitor(*args, **kwargs) -> NoReturn:
+        nonlocal monitor_called
+        monitor_called = True
+        raise AssertionError("monitor should not start with an invalid baseline")
+
+    service = GuiService(
+        tmp_path / "app-data",
+        monitor_function=unexpected_monitor,
+        token_function=lambda: "fixedtoken",
+    )
+    created = service.create_for_root(root)
+    created.baseline_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(BaselineError):
+        service.monitor_root(
+            root,
+            interval=10,
+            stop_event=Event(),
+            on_cycle=lambda cycle: None,
+        )
+    assert not monitor_called
+
+
+def test_gui_monitoring_state_transitions_and_stale_session_rejection() -> None:
+    control = GuiMonitoringControl()
+
+    first_id, first_stop = control.start()
+    assert control.state is GuiMonitoringState.RUNNING
+    assert control.active
+    with pytest.raises(RuntimeError, match="already active"):
+        control.start()
+
+    assert control.request_stop()
+    assert first_stop.is_set()
+    assert control.state is GuiMonitoringState.STOPPING
+    assert control.finish(first_id)
+    assert control.state is GuiMonitoringState.STOPPED
+    assert not control.active
+
+    second_id, _ = control.start()
+    assert second_id != first_id
+    assert not control.finish(first_id, failed=True)
+    assert control.state is GuiMonitoringState.RUNNING
+    assert control.finish(second_id, failed=True)
+    assert control.state is GuiMonitoringState.ERROR

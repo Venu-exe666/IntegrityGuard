@@ -1,6 +1,6 @@
 # IntegrityGuard Architecture
 
-## Version 2.0 GUI Phase 1 components
+## Version 2.0 GUI Phase 2 components
 
 IntegrityGuard currently has seven application layers:
 
@@ -18,17 +18,18 @@ trusted hashes and preserves uncertain states. Monitoring also calls the
 scanner directly for every polling cycle.
 ```
 
-GUI Phase 1 adds two layers without changing that engine graph:
+The GUI adds two layers without changing that engine graph:
 
 ```text
 gui.IntegrityGuardApp -------------- Tkinter/ttk presentation and UI thread
              |
-             +-- daemon worker + queue -- one non-overlapping operation
+             +-- worker threads + queue -- serialized GUI operations
                          |
                          +-- gui_service.GuiService
                                   +-- scan_directory()
                                   +-- create/load/save_baseline()
                                   +-- compare_baseline()
+                                  +-- monitor_directory()
 ```
 
 `gui_service.py` is presentation-neutral and contains no Tk objects. It maps a
@@ -38,10 +39,20 @@ derives dashboard rows and counts from the real `ChangeReport`. It refuses to
 create application storage inside the monitored root.
 
 `gui.py` owns folder selection, controls, progress indication, table rendering,
-confirmation dialogs, and friendly messages. A single daemon worker executes
-long filesystem operations while a queue and `after()` callback return results
-to Tk's main thread. Buttons are disabled during work, so scans and baseline
-creations cannot overlap. The window cannot close during an active operation.
+confirmation dialogs, and friendly messages. Non-daemon workers execute long
+filesystem operations while one queue and an `after()` callback return typed
+results to Tk's main thread. Tk widgets are never accessed from a worker.
+Buttons are disabled so baseline creation, manual scans, folder switching, and
+monitoring cannot overlap. Every monitoring session has an increasing identity;
+delayed messages from an older session are ignored. Closing the window requests
+cooperative shutdown and waits for an in-progress scan to finish before Tk is
+destroyed, so the monitoring worker does not silently outlive the GUI.
+Live alert history is bounded to the newest 1,000 table rows.
+
+`GuiMonitoringControl` is a presentation-neutral state machine for Running,
+Stopping, Stopped, and Error states. It owns a `threading.Event` for the current
+session. The GUI service loads the newest GUI-managed baseline and passes it,
+the event, and a cycle callback directly to `monitor_directory()`.
 
 The GUI console entry point is `integrityguard-gui`; the existing
 `integrityguard` CLI entry point and all v1.0 command contracts remain intact.
@@ -83,11 +94,16 @@ scanner, baseline, detector, and reporting APIs, routes normal output to stdout
 and diagnostics to stderr, and maps assessment state to stable process codes.
 It does not duplicate hashing, traversal, or comparison logic.
 
-`monitoring.py` is a synchronous foreground polling layer. It accepts one
+`monitoring.py` is a synchronous polling layer. It accepts one
 immutable `Baseline`, calls `scan_directory()`, compares every result with that
 same baseline, and exposes immutable cycle and session status objects. Clock,
 wait, scan, and cycle-handler callables are injectable for deterministic tests.
-No worker thread, event watcher, persistent state, or network component exists.
+Its optional stop event makes interval waiting interruptible without unsafe
+thread termination. A cancellation requested during a scan is handled only
+after that scan and its callback finish. Callers that omit the event retain the
+original injected wait function and `KeyboardInterrupt` behavior. The engine
+does not create its own worker thread, use a native filesystem event watcher,
+persist monitoring state, or access the network.
 Scan-error fingerprints include the safe category, permitted relative path,
 exception label, errno, and winerror. Numeric codes affect live deduplication
 but are intentionally not added to report schema version 1.

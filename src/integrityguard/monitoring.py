@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from os import PathLike
 from pathlib import Path
+from threading import Event
 
 from integrityguard.baseline import Baseline
 from integrityguard.detector import (
@@ -163,13 +164,17 @@ def monitor_directory(
     monotonic: MonotonicFunction = time.monotonic,
     on_cycle: CycleHandler | None = None,
     scan_limit: int | None = None,
+    stop_event: Event | None = None,
 ) -> MonitoringSession:
     """Repeatedly compare foreground scans with one unchanged baseline.
 
     The first scan is immediate. Each later scan starts after the configured
     delay following completion of the previous scan, so scan duration adds to
     the effective observation interval. ``scan_limit`` supports deterministic
-    embedding and tests; the CLI deliberately leaves it unset.
+    embedding and tests; the CLI deliberately leaves it unset. When supplied,
+    ``stop_event`` makes interval waits interruptible. A stop requested during
+    a scan is honored after that scan and its cycle callback finish safely.
+    Existing callers that omit it continue to use ``wait_function`` unchanged.
     """
     polling_interval = validate_interval(interval)
     if scan_limit is not None and (
@@ -192,6 +197,9 @@ def monitor_directory(
     interrupted = False
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            interrupted = True
+            break
         try:
             scan = _perform_scan(root_path, scan_function)
             if status.completed_scans == 0:
@@ -221,9 +229,17 @@ def monitor_directory(
             if scan_limit is not None and status.completed_scans >= scan_limit:
                 break
 
+            if stop_event is not None and stop_event.is_set():
+                interrupted = True
+                break
+
             deadline = monotonic() + polling_interval
             delay = max(0.0, deadline - monotonic())
-            wait_function(delay)
+            if stop_event is None:
+                wait_function(delay)
+            elif stop_event.wait(delay):
+                interrupted = True
+                break
         except KeyboardInterrupt:
             interrupted = True
             break

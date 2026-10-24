@@ -8,8 +8,10 @@ import re
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from os import PathLike
 from pathlib import Path
+from threading import Event
 
 from integrityguard.baseline import (
     Baseline,
@@ -18,6 +20,11 @@ from integrityguard.baseline import (
     save_baseline,
 )
 from integrityguard.detector import ChangeReport, ChangeStatus, compare_baseline
+from integrityguard.monitoring import (
+    CycleHandler,
+    MonitoringSession,
+    monitor_directory,
+)
 from integrityguard.scanner import ScanReport, scan_directory
 
 ScanFunction = Callable[[str | PathLike[str]], ScanReport]
@@ -26,6 +33,7 @@ SaveBaselineFunction = Callable[[Baseline, str | PathLike[str]], Path]
 LoadBaselineFunction = Callable[[str | PathLike[str]], Baseline]
 CompareFunction = Callable[[Baseline, ScanReport], ChangeReport]
 TokenFunction = Callable[[], str]
+MonitorFunction = Callable[..., MonitoringSession]
 
 
 class GuiIntegrationError(Exception):
@@ -38,6 +46,71 @@ class GuiBaselineNotFoundError(GuiIntegrationError):
 
 class GuiBaselineExistsError(GuiIntegrationError):
     """Raised when creating another baseline requires explicit confirmation."""
+
+
+class GuiMonitoringState(StrEnum):
+    """User-visible lifecycle states for one GUI monitoring worker."""
+
+    STOPPED = "stopped"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    ERROR = "error"
+
+
+class GuiMonitoringControl:
+    """Track GUI monitoring state and reject stale worker messages.
+
+    Tk's main thread owns all state transitions. Worker threads only observe
+    the returned ``Event`` and send the session identifier back through the
+    GUI queue.
+    """
+
+    def __init__(self) -> None:
+        self._state = GuiMonitoringState.STOPPED
+        self._session_id = 0
+        self._stop_event: Event | None = None
+
+    @property
+    def state(self) -> GuiMonitoringState:
+        return self._state
+
+    @property
+    def active(self) -> bool:
+        return self._state in {
+            GuiMonitoringState.RUNNING,
+            GuiMonitoringState.STOPPING,
+        }
+
+    def start(self) -> tuple[int, Event]:
+        """Begin a distinct session and return its identifier and stop event."""
+        if self.active:
+            raise RuntimeError("A monitoring session is already active.")
+        self._session_id += 1
+        self._stop_event = Event()
+        self._state = GuiMonitoringState.RUNNING
+        return self._session_id, self._stop_event
+
+    def request_stop(self) -> bool:
+        """Request cooperative shutdown of the active session."""
+        if not self.active or self._stop_event is None:
+            return False
+        self._state = GuiMonitoringState.STOPPING
+        self._stop_event.set()
+        return True
+
+    def is_current(self, session_id: int) -> bool:
+        """Return whether a queued message belongs to the newest session."""
+        return session_id == self._session_id
+
+    def finish(self, session_id: int, *, failed: bool = False) -> bool:
+        """Finish the current session, ignoring delayed messages from older ones."""
+        if not self.is_current(session_id) or not self.active:
+            return False
+        self._state = (
+            GuiMonitoringState.ERROR if failed else GuiMonitoringState.STOPPED
+        )
+        self._stop_event = None
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +172,7 @@ class GuiService:
         save_baseline_function: SaveBaselineFunction = save_baseline,
         load_baseline_function: LoadBaselineFunction = load_baseline,
         compare_function: CompareFunction = compare_baseline,
+        monitor_function: MonitorFunction = monitor_directory,
         token_function: TokenFunction | None = None,
     ) -> None:
         self.app_data_dir = Path(
@@ -109,6 +183,7 @@ class GuiService:
         self._save_baseline = save_baseline_function
         self._load_baseline = load_baseline_function
         self._compare = compare_function
+        self._monitor = monitor_function
         self._token = token_function or (lambda: secrets.token_hex(4))
 
     @property
@@ -174,6 +249,31 @@ class GuiService:
             report=report,
             summary=summary_from_report(report),
             rows=result_rows(report),
+        )
+
+    def monitor_root(
+        self,
+        root: str | PathLike[str],
+        *,
+        interval: float,
+        stop_event: Event,
+        on_cycle: CycleHandler,
+    ) -> MonitoringSession:
+        """Monitor ``root`` against its newest valid GUI baseline.
+
+        Baseline loading and compatibility checks remain in the existing
+        baseline, detector, and monitoring layers. No baseline is created or
+        updated by this operation.
+        """
+        selected_root = _absolute_root(root)
+        baseline_path = self.latest_baseline_path(selected_root)
+        baseline = self._load_baseline(baseline_path)
+        return self._monitor(
+            selected_root,
+            baseline,
+            interval=interval,
+            stop_event=stop_event,
+            on_cycle=on_cycle,
         )
 
     def _baseline_candidates(self, root: str | PathLike[str]) -> tuple[Path, ...]:
