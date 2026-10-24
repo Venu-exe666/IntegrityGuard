@@ -1,6 +1,6 @@
 # IntegrityGuard Architecture
 
-## Milestone 7.3 components
+## Version 1.0 components
 
 IntegrityGuard currently has seven application layers:
 
@@ -238,8 +238,27 @@ remain unchanged. `KeyboardInterrupt` during scanning or waiting stops the
 loop before another scan begins and returns the last completed session status.
 Other unexpected exceptions propagate rather than being hidden.
 
+## Packaging and release boundary
+
+The project uses a `src` layout and setuptools through the PEP 517 build
+interface. Project metadata, the console entry point, the Python requirement,
+and the SPDX license expression live in `pyproject.toml`. The wheel contains
+the `integrityguard` package and its license metadata. The source distribution
+also carries the README, changelog, release checklist, tests, and design
+documentation through `MANIFEST.in`.
+
+The runtime dependency set is empty. `pytest` is an optional development
+dependency, while build and metadata-validation tools are release tooling and
+do not become application dependencies. Wheel and source-distribution
+installation tests must use isolated temporary environments so an editable
+checkout cannot hide missing packaged files or entry-point defects.
+
+Version 1.0.0 changes package metadata and the CLI version only. Baseline
+schema 1, report schema 1, CLI command names, and exit-code contracts remain
+unchanged.
+
 ## Deferred components
 
 Baseline authentication and rotation, event-driven filesystem watching,
 background services, notifications, database storage, cloud integrations, and
-automatic remediation are deliberately not implemented in Milestone 7.3.
+automatic remediation are deliberately not implemented in version 1.0.

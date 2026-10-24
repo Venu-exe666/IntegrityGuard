@@ -1,12 +1,14 @@
 # IntegrityGuard
 
-IntegrityGuard is a Python file integrity monitoring (FIM) project for learning
-secure software development and practical cybersecurity engineering. It is
-being developed incrementally as a command-line application.
+IntegrityGuard is a local Python file integrity monitoring (FIM) command-line
+application and cybersecurity engineering portfolio project. It records
+trusted SHA-256 baselines, compares later filesystem scans, exports structured
+security reports, and can repeat assessments in a foreground polling session.
 
 ## Current status
 
-Milestones 1 through 6 plus Milestones 7.1 through 7.3 provide streaming
+Version 1.0.0 release preparation builds on Milestones 1 through 6 and
+Milestones 7.1 through 7.3, which provide streaming
 SHA-256 hashing, a reusable recursive directory scanner, secure versioned JSON
 baseline storage, conservative
 file-integrity change detection, a user-facing CLI with versioned reports, and
@@ -14,7 +16,9 @@ foreground periodic monitoring. The 7.x hardening adds handle-bound scanning,
 strict report-state validation, optional scan resource ceilings, and structured
 watch-error deduplication. Milestone 7.3 adds a least-privilege GitHub Actions
 matrix and explicit POSIX/Windows security suites. Background services and
-notifications are **not implemented**.
+notifications are **not implemented**. The package is not published to PyPI;
+the repository source and locally built distributions are the installation
+sources until an explicit publication decision is made.
 
 The hashing function:
 
@@ -35,7 +39,6 @@ The directory scanner:
 - excludes symbolic links, directory junctions, and Windows reparse points
   found during inspection;
 - hashes an already-open file object and binds metadata checks to that handle;
-  and
 - rejects detected identity substitutions and changes during hashing; and
 - optionally limits discovered entries, cumulative bytes hashed, and elapsed
   scan time; a reached limit is a structured incomplete-scan error.
@@ -83,6 +86,43 @@ not update the baseline, run as a service, or provide real-time detection.
 - pytest 8 or newer for development and testing
 
 The application has no third-party runtime dependencies.
+
+## Supported platforms
+
+The release CI matrix covers Ubuntu and Windows with Python 3.12 and 3.13.
+Other POSIX systems and newer compatible Python versions may work but are not
+part of the release matrix. Filesystem guarantees vary: local NTFS and typical
+Linux filesystems provide stronger evidence than unusual, remote, or deceptive
+filesystem implementations.
+
+Some real symbolic-link tests on Windows require Developer Mode or a suitably
+privileged account. Such tests skip explicitly when fixture creation is denied;
+a skip is not evidence that the behavior passed on that runner.
+
+## Installation
+
+Install from a checked-out source tree:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\integrityguard.exe --version
+```
+
+On Linux:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/integrityguard --version
+```
+
+After building a release wheel, it can be installed without using the source
+tree:
+
+```powershell
+python -m pip install .\dist\integrityguard-1.0.0-py3-none-any.whl
+```
 
 ## Development setup (PowerShell)
 
@@ -134,10 +174,11 @@ runs the complete pytest suite with skip reasons. The workflow grants only
 `contents: read`, persists no checkout credential, uses no project secrets or
 project-specific external services, and has a 20-minute job timeout.
 
-This matrix is configuration until GitHub-hosted jobs actually pass. Local
-Windows results do not establish Ubuntu or Python 3.12 behavior. Recommended
-branch protection should require all four matrix jobs before merging to
-`main`; repository settings are not managed by this project.
+All four GitHub-hosted jobs passed for commit `c0d7c2b`. Release-preparation
+changes made after that commit require a fresh matrix run; earlier green jobs
+do not validate a changed release commit. Recommended branch protection should
+require all four matrix jobs before merging to `main`; repository settings are
+not managed by this project.
 
 ## Command-line workflow
 
@@ -386,14 +427,17 @@ docs/security-model.md
                       Assets, threats, assumptions, and limitations
 ```
 
-## Roadmap
+## Release and roadmap
 
-Milestones 7.1 through 7.3 add handle-bound scanner hashing, adversarial race
-tests, strict report validation, resource ceilings, safer watch deduplication,
-and cross-platform CI/security-test configuration.
-Baseline authentication or
-rotation, background service operation, notifications, and release engineering
-remain future work.
+The package metadata targets version 1.0.0. See [CHANGELOG.md](CHANGELOG.md),
+[the release checklist](RELEASE_CHECKLIST.md), and
+[the draft release notes](docs/release-notes-v1.0.0.md). A version number does
+not replace security review: the exact release commit must pass the complete CI
+matrix and distribution-installation checks before it is tagged.
+
+Baseline authentication or rotation, background service operation,
+notifications, event-driven watching, and automatic remediation remain future
+work.
 
 ## Security limitations
 
@@ -435,5 +479,5 @@ show an incomplete-cycle reminder.
 
 ## License
 
-The project metadata declares the MIT License. A full license file will be
-added before distribution.
+IntegrityGuard is distributed under the [MIT License](LICENSE). Copyright
+2026 Venu-exe666.

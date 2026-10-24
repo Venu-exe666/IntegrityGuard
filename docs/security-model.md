@@ -2,7 +2,7 @@
 
 ## Scope and protected assets
 
-Milestones 3 through 7.3 record SHA-256 fingerprints, compare them with fresh
+IntegrityGuard 1.0 records SHA-256 fingerprints, compares them with fresh
 scanner output, present results through a CLI and saved reports, and repeat
 those comparisons in a foreground polling session. The protected assets are
 the monitored file contents, assessment accuracy, the stored baseline, exported
@@ -180,9 +180,22 @@ prove that the host is uncompromised. An attacker might alter excluded data,
 tamper with an unauthenticated baseline, evade a non-atomic scan, operate only
 in memory, or compromise components below the scanner's trust boundary.
 
-## Explicit non-goals for Milestone 7.3
+## Explicit non-goals for version 1.0
 
-Milestone 7.3 does not provide real-time event monitoring, detect malware,
+Version 1.0 does not provide real-time event monitoring, detect malware,
 prevent or remediate file changes, authenticate or rotate baselines, update
 baselines automatically, install a background service, send notifications, or
 use databases, telemetry, external logging, or cloud services.
+
+## Release assurance boundary
+
+Passing tests, successful package builds, and clean installations provide
+evidence about the tested code and environments; they do not prove the absence
+of vulnerabilities. The exact release commit must pass the Windows and Ubuntu
+CI matrix after release-preparation changes. Locally produced artifacts are not
+trusted merely because their filenames contain the intended version.
+
+Release artifacts should be built from a reviewed clean commit, inspected, and
+associated with that commit's tag. This release process does not yet include
+artifact signing, provenance attestations, PyPI trusted publishing, or a
+reproducible-build guarantee.

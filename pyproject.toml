@@ -1,26 +1,36 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "integrityguard"
-version = "0.1.0"
+version = "1.0.0"
 description = "A security-focused file integrity monitoring CLI application"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "IntegrityGuard contributors" },
+    { name = "Venu-exe666" },
 ]
+keywords = ["cybersecurity", "file-integrity", "sha256", "monitoring"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Information Technology",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Venu-exe666/IntegrityGuard"
+Repository = "https://github.com/Venu-exe666/IntegrityGuard"
+Issues = "https://github.com/Venu-exe666/IntegrityGuard/issues"
 
 [project.scripts]
 integrityguard = "integrityguard.cli:main"

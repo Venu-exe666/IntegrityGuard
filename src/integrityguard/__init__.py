@@ -164,4 +164,4 @@ __all__ = [
     "validate_report_data",
     "validate_interval",
 ]
-__version__ = "0.1.0"
+__version__ = "1.0.0"

@@ -1,4 +1,4 @@
-# IntegrityGuard Learning Notes: Milestones 1 through 7.3
+# IntegrityGuard Learning Notes: Version 1.0
 
 ## SHA-256
 
@@ -488,3 +488,27 @@ IntegrityGuard writes UTF-8 terminal streams so Unicode relative paths survive
 redirection. Very aggressive intervals can contend with applications and
 security software for Windows filesystem and antivirus scanning resources;
 start with the ten-second default and tune using measured scan duration.
+
+## Release engineering and isolated installation tests
+
+A source checkout can accidentally hide packaging mistakes. Imports may work
+because `src` is on a development path, and an editable installation may expose
+files that a wheel forgot to include. A professional release therefore builds
+both standardized distribution forms and installs each into a new virtual
+environment before exercising the console command.
+
+The wheel is the normal installation artifact and should contain only the
+runtime package plus distribution metadata and licensing material. The source
+distribution should contain enough source, tests, and documentation to inspect
+and rebuild the project. Metadata validation checks names, versions, license
+fields, and archive structure without claiming anything about runtime security.
+
+Semantic version 1.0.0 communicates an intended stable command and schema
+contract. It does not mean the filesystem can be observed atomically or that
+all adversaries are defeated. Baseline schema 1 and report schema 1 are versioned
+independently from the package and remain unchanged for this release.
+
+Release validation is tied to an exact commit. A green CI run for an earlier
+commit is useful history but cannot validate later documentation, packaging, or
+version changes. Tags, GitHub Releases, and external publication should happen
+only after the final release commit passes the required matrix.
