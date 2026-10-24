@@ -35,6 +35,9 @@ Issues = "https://github.com/Venu-exe666/IntegrityGuard/issues"
 [project.scripts]
 integrityguard = "integrityguard.cli:main"
 
+[project.gui-scripts]
+integrityguard-gui = "integrityguard.gui:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8,<10",

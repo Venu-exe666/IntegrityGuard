@@ -20,6 +20,10 @@ notifications are **not implemented**. The package is not published to PyPI;
 the repository source and locally built distributions are the installation
 sources until an explicit publication decision is made.
 
+The `v2.0-development` branch adds GUI Phase 1: a Windows-focused Tkinter/ttk
+dashboard that calls the existing scanner, baseline, and detector APIs without
+reimplementing the security engine. The CLI remains available and unchanged.
+
 The hashing function:
 
 - opens files read-only in binary mode;
@@ -123,6 +127,35 @@ tree:
 ```powershell
 python -m pip install .\dist\integrityguard-1.0.0-py3-none-any.whl
 ```
+
+## Desktop GUI — Phase 1
+
+After installing the project, launch the Windows desktop application with:
+
+```powershell
+integrityguard-gui
+```
+
+From a source checkout, it can also be launched directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m integrityguard.gui
+```
+
+Choose a folder, create its trusted baseline, and use **Scan Now** to compare a
+fresh scan. The dashboard displays real added, modified, deleted, unknown, and
+unchanged counts; the table lists actionable non-clean results. Filesystem work
+runs on one background thread so Tk remains responsive, and action buttons are
+disabled until the operation finishes.
+
+GUI baselines are stored as create-only versions under
+`%LOCALAPPDATA%\IntegrityGuard\baselines`. Creating another version requires an
+explicit confirmation and retains the prior file. The integration layer rejects
+a configured baseline directory inside the monitored root. Incomplete scans are
+shown as warnings and cannot become trusted baselines or clean assessments.
+
+Phase 1 does not add GUI monitoring, installers, auto-start, notifications, or
+system-tray behavior. The existing `watch` CLI remains the monitoring interface.
 
 ## Development setup (PowerShell)
 

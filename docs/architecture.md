@@ -1,6 +1,6 @@
 # IntegrityGuard Architecture
 
-## Version 1.0 components
+## Version 2.0 GUI Phase 1 components
 
 IntegrityGuard currently has seven application layers:
 
@@ -17,6 +17,34 @@ monitoring and reporting consume detector.compare_baseline(), which compares
 trusted hashes and preserves uncertain states. Monitoring also calls the
 scanner directly for every polling cycle.
 ```
+
+GUI Phase 1 adds two layers without changing that engine graph:
+
+```text
+gui.IntegrityGuardApp -------------- Tkinter/ttk presentation and UI thread
+             |
+             +-- daemon worker + queue -- one non-overlapping operation
+                         |
+                         +-- gui_service.GuiService
+                                  +-- scan_directory()
+                                  +-- create/load/save_baseline()
+                                  +-- compare_baseline()
+```
+
+`gui_service.py` is presentation-neutral and contains no Tk objects. It maps a
+selected absolute root to a collision-resistant per-user baseline namespace,
+creates immutable numbered baseline versions, chooses the newest version, and
+derives dashboard rows and counts from the real `ChangeReport`. It refuses to
+create application storage inside the monitored root.
+
+`gui.py` owns folder selection, controls, progress indication, table rendering,
+confirmation dialogs, and friendly messages. A single daemon worker executes
+long filesystem operations while a queue and `after()` callback return results
+to Tk's main thread. Buttons are disabled during work, so scans and baseline
+creations cannot overlap. The window cannot close during an active operation.
+
+The GUI console entry point is `integrityguard-gui`; the existing
+`integrityguard` CLI entry point and all v1.0 command contracts remain intact.
 
 `hashing.py` calculates SHA-256 digests from either a pathname for general API
 use or an already-open binary stream. It knows nothing about traversal or scan
