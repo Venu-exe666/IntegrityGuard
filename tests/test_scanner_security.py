@@ -86,6 +86,7 @@ def test_path_replacement_during_hash_cannot_change_hashed_object(
     assert len(original) == len(alternate)
     target.write_bytes(original)
     substitute.write_bytes(alternate)
+    baseline = create_baseline(scan_directory(root))
     real_hash = scanner_module.sha256_stream
     replacement_blocked = False
 
@@ -107,14 +108,40 @@ def test_path_replacement_during_hash_cannot_change_hashed_object(
     monkeypatch.setattr(scanner_module, "sha256_stream", attempt_swap)
 
     report = scan_directory(root)
+    changes = compare_baseline(baseline, report)
+    security_report = create_security_report(changes)
 
-    assert report.errors == ()
+    assert len(report.files) == 1
     assert report.files[0].status is ScanStatus.SCANNED
     assert report.files[0].sha256 == hashlib.sha256(original).hexdigest()
     assert report.files[0].sha256 != hashlib.sha256(alternate).hexdigest()
     assert target.read_bytes() == original
     if os.name == "nt":
         assert replacement_blocked
+        assert report.errors == ()
+        assert changes.scan_complete
+        assert changes.assessment_conclusive
+        assert changes.is_clean
+    else:
+        assert not replacement_blocked
+        assert len(report.errors) == 1
+        error = report.errors[0]
+        assert error.relative_path == "."
+        assert error.kind is ScanErrorKind.DIRECTORY_ACCESS
+        assert error.exception_type == "_ObjectChangedError"
+        assert error.message == (
+            "The directory changed while its contents were being scanned."
+        )
+        assert len(security_report.scan_issues) == 1
+        issue = security_report.scan_issues[0]
+        assert issue.relative_path == error.relative_path
+        assert issue.kind is error.kind
+        assert issue.exception_type == error.exception_type
+        assert not changes.scan_complete
+        assert not changes.assessment_conclusive
+        assert not changes.is_clean
+
+    assert changes.deleted == ()
 
 
 def test_symlink_substitution_is_rejected_without_hashing_target(
