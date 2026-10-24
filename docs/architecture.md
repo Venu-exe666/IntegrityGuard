@@ -1,6 +1,6 @@
 # IntegrityGuard Architecture
 
-## Milestone 7.1 components
+## Milestone 7.2 components
 
 IntegrityGuard currently has seven application layers:
 
@@ -26,6 +26,10 @@ pathname as a different object.
 `scanner.py` owns traversal, relative-path normalization, file metadata,
 deterministic ordering, link avoidance, race checks, and error aggregation. It
 calls the existing hashing function rather than duplicating hashing logic.
+An optional `ScanLimits` policy is enforced during enumeration and stream
+reading. Entry names stop accumulating once the entry ceiling is crossed;
+cumulative bytes are checked against both inspected size and bytes actually
+read; duration checks use monotonic time between traversal and read operations.
 
 `baseline.py` owns the versioned persistence schema, compatibility checks,
 strict JSON validation, size-limited loading, storage-path policy, and atomic
@@ -41,6 +45,10 @@ immutable `ChangeReport`. It performs no baseline update or report-file write.
 renders compact monochrome text, and strictly serializes report schema version
 1. Loading a historical report is a bounded trust-boundary operation. Report
 JSON omits the absolute scan root and raw scanner messages.
+Status-specific validation cross-checks hash presence, available sizes and
+timestamps, `metadata_changed`, and UNKNOWN reason semantics. Duplicate
+persisted scan issues are rejected; duplicate in-memory errors that collapse to
+the same sanitized schema-v1 issue are emitted once.
 
 `cli.py` is a thin orchestration layer. It parses arguments, calls the existing
 scanner, baseline, detector, and reporting APIs, routes normal output to stdout
@@ -52,6 +60,9 @@ immutable `Baseline`, calls `scan_directory()`, compares every result with that
 same baseline, and exposes immutable cycle and session status objects. Clock,
 wait, scan, and cycle-handler callables are injectable for deterministic tests.
 No worker thread, event watcher, persistent state, or network component exists.
+Scan-error fingerprints include the safe category, permitted relative path,
+exception label, errno, and winerror. Numeric codes affect live deduplication
+but are intentionally not added to report schema version 1.
 
 ## Result model
 
@@ -66,6 +77,12 @@ A successful file record contains its normalized relative path, SHA-256 hash,
 byte size, UTC modification time, and `scanned` status. Failed reads and files
 that change during hashing stay visible in the file records, but their digest
 is `None` and their status explains that the result is not trustworthy.
+
+When a resource ceiling is reached, the scanner retains only already completed
+file results and adds a sanitized root-scoped structured error. The detector's
+existing scope rules classify unscanned baseline entries as UNKNOWN, never
+DELETED, and make the assessment inconclusive. Baseline creation rejects the
+error-bearing scan.
 
 ## Trust boundaries and race checks
 
@@ -195,6 +212,11 @@ resolution. Identical active findings are not reprinted, although each cycle
 summarizes active change, unknown, and scan-error counts. This state is never
 written to disk and disappears when the process exits.
 
+Optional per-scan limits apply independently to every watch cycle. Scans remain
+sequential, and the normal post-scan wait prevents a limit failure from becoming
+a busy loop. Repeated identical limit errors stay active but do not generate a
+new alert line each cycle; the incomplete warning remains visible.
+
 An ordinary `OSError` escaping the scanner becomes a root-scoped structured
 error and therefore an inconclusive cycle. Existing structured scanner errors
 remain unchanged. `KeyboardInterrupt` during scanning or waiting stops the
@@ -205,4 +227,4 @@ Other unexpected exceptions propagate rather than being hidden.
 
 Baseline authentication and rotation, event-driven filesystem watching,
 background services, notifications, database storage, cloud integrations, and
-automatic remediation are deliberately not implemented in Milestone 6.
+automatic remediation are deliberately not implemented in Milestone 7.2.

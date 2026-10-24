@@ -6,11 +6,13 @@ being developed incrementally as a command-line application.
 
 ## Current status
 
-Milestones 1 through 6 provide streaming SHA-256 hashing, a reusable recursive
+Milestones 1 through 6 plus Milestones 7.1 and 7.2 provide streaming SHA-256 hashing, a reusable recursive
 directory scanner, secure versioned JSON baseline storage, conservative
 file-integrity change detection, a user-facing CLI with versioned reports, and
-foreground periodic monitoring. Background services and notifications are
-**not implemented**.
+foreground periodic monitoring. The 7.x hardening adds handle-bound scanning,
+strict report-state validation, optional scan resource ceilings, and structured
+watch-error deduplication. Background services and notifications are **not
+implemented**.
 
 The hashing function:
 
@@ -33,6 +35,8 @@ The directory scanner:
 - hashes an already-open file object and binds metadata checks to that handle;
   and
 - rejects detected identity substitutions and changes during hashing.
+- optionally limits discovered entries, cumulative bytes hashed, and elapsed
+  scan time; a reached limit is a structured incomplete-scan error.
 
 Baseline management:
 
@@ -60,12 +64,14 @@ CLI, reporting, and monitoring:
 - keep human-readable and machine-readable output separate;
 - use documented exit codes for clean, changed, inconclusive, and failed runs;
 - serialize deterministic, strictly validated report schema version 1 JSON;
+- reject status/metadata contradictions and duplicate persisted scan issues;
 - omit absolute monitored roots and raw filesystem error messages from reports;
 - refuse to overwrite report files or store them inside the monitored root; and
 - clearly identify saved reports as historical rather than fresh scans.
 
 The `watch` command repeatedly compares fresh scans with the same trusted
-baseline, suppresses identical repeated alerts in memory, reports resolutions,
+baseline, suppresses identical repeated alerts in memory, reports meaningful
+error-code transitions and resolutions,
 and exits cleanly on Ctrl+C. It remains a foreground polling command: it does
 not update the baseline, run as a service, or provide real-time detection.
 
@@ -167,6 +173,26 @@ add `--verbose` to display them. A JSON scan writes JSON alone to standard
 output unless `--output` is supplied. Diagnostics go to standard error. Both
 streams are configured as UTF-8 so Unicode paths remain stable when redirected.
 
+### Optional scan limits
+
+The `init`, `scan`, and `watch` commands accept the same optional ceilings:
+
+```powershell
+integrityguard scan `
+  --root .\demo\monitored `
+  --baseline .\demo\state\baseline.json `
+  --max-entries 100000 `
+  --max-bytes 1073741824 `
+  --max-seconds 300
+```
+
+All three limits are opt-in to preserve existing workflows. `--max-entries`
+counts every enumerated filesystem entry, including entries later skipped;
+`--max-bytes` counts bytes actually supplied to SHA-256 across the scan; and
+`--max-seconds` uses a monotonic clock. Reaching any ceiling stops that scan,
+records a sanitized `ScanLimitExceededError`, and makes comparison exit 2
+(inconclusive). `init` refuses to create a baseline from such a scan.
+
 ### Periodic monitoring
 
 Start a foreground watch session with the default ten-second interval:
@@ -237,7 +263,9 @@ individual recoverable scan failures remain visible as incomplete cycles.
 
 Report schema version 1 contains the generation timestamp, overall assessment,
 category counts, sorted file-change records, sanitized scan issues, skipped
-paths, and completeness/conclusiveness flags. It does not contain file contents,
+paths, and completeness/conclusiveness flags. Its loader cross-checks hashes,
+available metadata, `metadata_changed`, unknown reasons, status categories, and
+duplicate issues. It does not contain file contents,
 the absolute monitored root, or raw exception messages. Treat reports as
 sensitive security records despite these omissions.
 
@@ -262,9 +290,12 @@ digest for an incomplete read.
 Scan a directory and inspect successful files and errors separately:
 
 ```python
-from integrityguard.scanner import scan_directory
+from integrityguard.scanner import ScanLimits, scan_directory
 
-report = scan_directory("path/to/directory")
+report = scan_directory(
+    "path/to/directory",
+    limits=ScanLimits(max_entries=100_000, max_bytes=1_073_741_824),
+)
 for file in report.files:
     print(file.relative_path, file.sha256, file.status)
 for error in report.errors:
@@ -323,8 +354,9 @@ docs/security-model.md
 
 ## Roadmap
 
-Milestone 7.1 adds handle-bound scanner hashing and adversarial regression
-tests for the confirmed path-swap vulnerability. Baseline authentication or
+Milestones 7.1 and 7.2 add handle-bound scanner hashing, adversarial race tests,
+strict report validation, resource ceilings, and safer watch deduplication.
+Baseline authentication or
 rotation, background service operation, notifications, and release engineering
 remain future work.
 
@@ -357,6 +389,14 @@ between scans may never be observed. Shorter intervals reduce that window but
 increase CPU use, disk reads, and hashing activity. Scan duration also extends
 the effective observation interval, and concurrent filesystem changes retain
 the scanner's documented TOCTOU limitations.
+
+Limits reduce exposure to unexpectedly large trees but are not quotas enforced
+by the operating system. A single filesystem call or chunk read can block past
+the time ceiling, names collected for one directory still consume memory up to
+the remaining entry limit, and leaving limits unset preserves unbounded legacy
+behavior. A limit-hit cycle is never clean: unscanned baseline paths remain
+UNKNOWN, and watch mode suppresses identical alert lines while continuing to
+show an incomplete-cycle reminder.
 
 ## License
 

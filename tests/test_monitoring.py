@@ -36,6 +36,7 @@ from integrityguard.monitoring import (
 from integrityguard.scanner import (
     ScanError,
     ScanErrorKind,
+    ScanLimits,
     ScanReport,
     ScanStatus,
     scan_directory,
@@ -172,6 +173,34 @@ def test_scans_never_overlap_and_use_no_worker_threads(tmp_path: Path) -> None:
     assert thread_ids == [threading.main_thread().ident] * 3
 
 
+def test_repeated_resource_limit_is_inconclusive_and_deduplicated(
+    tmp_path: Path,
+) -> None:
+    root, baseline = _baseline_directory(
+        tmp_path,
+        {"a.txt": b"a", "b.txt": b"b"},
+    )
+
+    cycles, _ = _run(
+        root,
+        baseline,
+        scan_limit=2,
+        scan_function=lambda path: scan_directory(
+            path,
+            limits=ScanLimits(max_entries=1),
+        ),
+    )
+
+    assert not cycles[0].report.assessment_conclusive
+    assert cycles[0].report.deleted == ()
+    assert len(cycles[0].new_alerts) == 3  # two UNKNOWN paths and one limit error
+    assert cycles[1].new_alerts == ()
+    assert cycles[1].repeated_finding_count == 3
+    output = format_monitoring_cycle(cycles[1])
+    assert "No new alerts" in output
+    assert "INCOMPLETE assessment" in output
+
+
 @pytest.mark.parametrize(
     ("operation", "expected_kind"),
     [
@@ -233,6 +262,59 @@ def test_unknown_and_scan_errors_remain_incomplete(tmp_path: Path) -> None:
     assert "scan errors: 1" in output
     assert "INCOMPLETE" in output
     assert session.status.unknown_finding_count == 1
+
+
+def test_scan_error_code_transition_creates_new_sanitized_alert(
+    tmp_path: Path,
+) -> None:
+    root, baseline = _baseline_directory(tmp_path)
+    clean = scan_directory(root)
+    failed = _failed_scan(root)
+    denied = replace(
+        failed,
+        errors=(
+            replace(
+                failed.errors[0],
+                message="secret first path",
+                errno=13,
+            ),
+        ),
+    )
+    missing = replace(
+        failed,
+        errors=(
+            replace(
+                failed.errors[0],
+                message="secret second path",
+                errno=2,
+            ),
+        ),
+    )
+    scans = iter([clean, denied, missing, missing])
+
+    cycles, _ = _run(
+        root,
+        baseline,
+        scan_limit=4,
+        scan_function=lambda path: next(scans),
+    )
+
+    assert any(
+        alert.kind is MonitoringFindingKind.SCAN_ERROR
+        and alert.detail is not None
+        and "errno=13" in alert.detail
+        for alert in cycles[1].new_alerts
+    )
+    assert any(
+        alert.kind is MonitoringFindingKind.SCAN_ERROR
+        and alert.detail is not None
+        and "errno=2" in alert.detail
+        for alert in cycles[2].new_alerts
+    )
+    assert cycles[3].new_alerts == ()
+    rendered = format_monitoring_cycle(cycles[2])
+    assert "secret first path" not in rendered
+    assert "secret second path" not in rendered
 
 
 def test_unsafe_exception_labels_are_not_rendered(tmp_path: Path) -> None:

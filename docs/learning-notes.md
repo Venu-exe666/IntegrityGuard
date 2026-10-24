@@ -1,4 +1,4 @@
-# IntegrityGuard Learning Notes: Milestones 1 through 6
+# IntegrityGuard Learning Notes: Milestones 1 through 7.2
 
 ## SHA-256
 
@@ -47,6 +47,11 @@ The function reports open and read failures through Python's standard
 filesystem exceptions. It returns a digest only after reaching the end of the
 file, preventing callers from mistaking an incomplete hash for a successful
 result.
+
+Python's `bool` is a subclass of `int`, so `isinstance(True, int)` is true.
+Security-sensitive numeric validation uses `type(value) is int` here: chunk
+sizes accept genuine positive integers while rejecting booleans, floats,
+strings, zero, and negative values.
 
 ## Why automated testing matters
 
@@ -255,6 +260,22 @@ A clean result requires both a conclusive assessment and no confirmed added,
 deleted, or modified records. This is deliberately stricter than merely having
 an empty `modified` list.
 
+## Cooperative resource limits
+
+Traversal can be adversarial even when every file is ordinary: a directory can
+contain huge numbers of names, files can be enormous, and repeated watch scans
+can multiply the work. `ScanLimits` optionally caps enumerated entries,
+cumulative bytes passed to hashing, and monotonic elapsed time. Enforcement
+happens while names and bytes are consumed, not after a complete unbounded list
+or hash operation.
+
+The time limit is cooperative. It is checked around operations but cannot
+preempt a filesystem call blocked in the kernel. Deterministic sorting also
+requires holding the permitted names for one directory in memory. These limits
+reduce exposure; they are not an atomic snapshot or an OS-enforced sandbox.
+When one is reached, the root-scoped error deliberately turns unobserved paths
+into UNKNOWN and prevents a false clean or false deletion result.
+
 ## False positives and false negatives
 
 Using SHA-256 rather than timestamps avoids many false modification reports
@@ -311,8 +332,9 @@ claim about the monitored directory.
 Report schema version 1 groups sorted records into added, deleted, modified,
 unchanged, and unknown categories. Counts are redundant on purpose: strict
 loading recalculates them and rejects disagreement. The loader also verifies
-hash/status semantics, UTC timestamps, normalized paths, uniqueness,
-completeness, conclusiveness, and the overall assessment.
+hash/status semantics, status-specific metadata combinations,
+`metadata_changed`, UNKNOWN reasons, UTC timestamps, normalized paths,
+uniqueness, completeness, conclusiveness, and the overall assessment.
 
 Schemas should fail closed. Silently accepting unknown fields, duplicate JSON
 keys, malformed digests, or future schema versions can cause different tools
@@ -391,6 +413,12 @@ changing its integrity classification would be incorrect. The monitor therefore
 keeps a bounded in-memory map of findings active in the most recent cycle. Its
 fingerprints include classification and the current trusted hash where one is
 available.
+
+For scan failures the fingerprint also includes the sanitized error category,
+relative path, exception type, errno, and winerror. This distinguishes, for
+example, permission loss from a later missing-file error even when Python uses
+the same exception class. Raw operating-system messages are excluded because
+they can contain absolute paths or other sensitive text.
 
 A new key or changed fingerprint is displayed. A key that disappears produces
 a resolution. This makes a new hash, classification change, resolved issue, or

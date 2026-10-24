@@ -36,7 +36,7 @@ from integrityguard.reporting import (
     report_to_json,
     save_report,
 )
-from integrityguard.scanner import scan_directory
+from integrityguard.scanner import ScanLimits, ScanReport, scan_directory
 
 EXIT_SUCCESS = 0
 EXIT_CHANGES = 1
@@ -86,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="New baseline JSON file outside the monitored directory.",
     )
+    _add_scan_limit_arguments(init_parser)
     init_parser.set_defaults(handler=_run_init)
 
     scan_parser = subparsers.add_parser(
@@ -121,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include individual unchanged paths in text output.",
     )
+    _add_scan_limit_arguments(scan_parser)
     scan_parser.set_defaults(handler=_run_scan)
 
     report_parser = subparsers.add_parser(
@@ -172,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show classification counts for every completed cycle.",
     )
+    _add_scan_limit_arguments(watch_parser)
     watch_parser.set_defaults(handler=_run_watch)
     return parser
 
@@ -193,7 +196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_init(args: argparse.Namespace) -> int:
-    scan = scan_directory(args.root)
+    scan = _scan_with_limits(args.root, args)
     baseline = create_baseline(scan)
     destination = save_baseline(baseline, args.baseline)
     print("IntegrityGuard baseline created.")
@@ -208,7 +211,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         raise CLIError("--output requires --format json.")
 
     baseline = load_baseline(args.baseline)
-    scan = scan_directory(args.root)
+    scan = _scan_with_limits(args.root, args)
     changes = compare_baseline(baseline, scan)
     report = create_security_report(changes)
 
@@ -247,12 +250,16 @@ def _run_watch(args: argparse.Namespace) -> int:
         sys.stdout.write(format_monitoring_cycle(cycle, verbose=args.verbose))
         sys.stdout.flush()
 
-    session = monitor_directory(
-        args.root,
-        baseline,
-        interval=args.interval,
-        on_cycle=display_cycle,
-    )
+    limits = _scan_limits_from_args(args)
+    monitor_arguments: dict[str, object] = {
+        "interval": args.interval,
+        "on_cycle": display_cycle,
+    }
+    if limits is not None:
+        monitor_arguments["scan_function"] = (
+            lambda root: scan_directory(root, limits=limits)
+        )
+    session = monitor_directory(args.root, baseline, **monitor_arguments)
     sys.stdout.write(format_monitoring_summary(session))
     sys.stdout.flush()
     return EXIT_SUCCESS
@@ -263,6 +270,67 @@ def _polling_interval(value: str) -> float:
         return validate_interval(value)
     except InvalidMonitoringIntervalError as error:
         raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def _positive_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive integer") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _positive_duration(value: str) -> float:
+    try:
+        parsed = float(value)
+        ScanLimits(max_duration_seconds=parsed)
+        return parsed
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(
+            "must be a finite positive number of seconds"
+        ) from error
+
+
+def _add_scan_limit_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--max-entries",
+        type=_positive_integer,
+        help="Stop after discovering this many filesystem entries.",
+    )
+    parser.add_argument(
+        "--max-bytes",
+        type=_positive_integer,
+        help="Stop after hashing this many cumulative bytes.",
+    )
+    parser.add_argument(
+        "--max-seconds",
+        type=_positive_duration,
+        help="Stop a scan after this many monotonic seconds.",
+    )
+
+
+def _scan_limits_from_args(args: argparse.Namespace) -> ScanLimits | None:
+    values = (
+        getattr(args, "max_entries", None),
+        getattr(args, "max_bytes", None),
+        getattr(args, "max_seconds", None),
+    )
+    if values == (None, None, None):
+        return None
+    return ScanLimits(
+        max_entries=values[0],
+        max_bytes=values[1],
+        max_duration_seconds=values[2],
+    )
+
+
+def _scan_with_limits(root: Path, args: argparse.Namespace) -> ScanReport:
+    limits = _scan_limits_from_args(args)
+    if limits is None:
+        return scan_directory(root)
+    return scan_directory(root, limits=limits)
 
 
 def _diagnostic(message: str) -> None:

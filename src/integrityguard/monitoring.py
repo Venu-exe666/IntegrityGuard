@@ -341,6 +341,8 @@ def _perform_scan(root: Path, scan_function: ScanFunction) -> ScanReport:
             kind=ScanErrorKind.DIRECTORY_ACCESS,
             message="The scan operation could not access the selected root.",
             exception_type=type(error).__name__,
+            errno=_safe_error_code(getattr(error, "errno", None)),
+            winerror=_safe_error_code(getattr(error, "winerror", None)),
         )
         return ScanReport(root=root, files=(), errors=(scan_error,), skipped_paths=())
 
@@ -353,7 +355,9 @@ def _reject_invalid_startup_root(scan: ScanReport) -> None:
         ScanErrorKind.DIRECTORY_ACCESS,
     }
     if any(
-        error.relative_path == "." and error.kind in fatal_kinds
+        error.relative_path == "."
+        and error.kind in fatal_kinds
+        and error.exception_type != "ScanLimitExceededError"
         for error in scan.errors
     ):
         raise MonitoringStartupError(
@@ -372,16 +376,13 @@ def _collect_findings(
         path_key = _path_key(error.relative_path)
         key = ("scan_error", path_key, error.kind.value)
         exception_type = _safe_exception_type(error.exception_type)
+        error_codes = (error.errno, error.winerror)
         findings[key] = _Finding(
             key=key,
-            fingerprint=(exception_type,),
+            fingerprint=(exception_type, *error_codes),
             kind=MonitoringFindingKind.SCAN_ERROR,
             relative_path=error.relative_path,
-            detail=(
-                f"{error.kind.value} ({exception_type})"
-                if exception_type
-                else error.kind.value
-            ),
+            detail=_scan_error_detail(error.kind, exception_type, *error_codes),
         )
     for source, paths in (
         ("baseline", report.baseline_skipped_paths),
@@ -503,6 +504,27 @@ def _safe_exception_type(value: object) -> str | None:
     if _EXCEPTION_TYPE_PATTERN.fullmatch(value) is None:
         return None
     return value
+
+
+def _safe_error_code(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _scan_error_detail(
+    kind: ScanErrorKind,
+    exception_type: str | None,
+    errno: int | None,
+    winerror: int | None,
+) -> str:
+    labels: list[str] = []
+    if exception_type:
+        labels.append(exception_type)
+    if errno is not None:
+        labels.append(f"errno={errno}")
+    if winerror is not None:
+        labels.append(f"winerror={winerror}")
+    suffix = f" ({', '.join(labels)})" if labels else ""
+    return f"{kind.value}{suffix}"
 
 
 def _utc_now() -> datetime:

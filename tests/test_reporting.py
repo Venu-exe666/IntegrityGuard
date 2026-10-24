@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from integrityguard.scanner import (
     ScanError,
     ScanErrorKind,
     ScanReport,
+    ScanStatus,
     scan_directory,
 )
 
@@ -44,6 +46,35 @@ def _change_report(tmp_path: Path, files: dict[str, bytes] | None = None):
         target.write_bytes(content)
     baseline = create_baseline(scan_directory(monitored))
     return monitored, baseline, compare_baseline(baseline, scan_directory(monitored))
+
+
+def _report_data_for_status(tmp_path: Path, status: str) -> dict[str, object]:
+    monitored = tmp_path / status
+    monitored.mkdir(parents=True)
+    target = monitored / "file.txt"
+    if status != "added":
+        target.write_bytes(b"original")
+    baseline = create_baseline(scan_directory(monitored))
+
+    if status == "added":
+        target.write_bytes(b"added")
+    elif status == "deleted":
+        target.unlink()
+    elif status == "modified":
+        target.write_bytes(b"modified")
+    elif status == "unknown":
+        error = ScanError(
+            "file.txt",
+            ScanErrorKind.FILE_ACCESS,
+            "not exported",
+            "PermissionError",
+        )
+        scan = ScanReport(monitored.resolve(), (), (error,), ())
+        changes = compare_baseline(baseline, scan)
+        return json.loads(report_to_json(create_security_report(changes)))
+
+    changes = compare_baseline(baseline, scan_directory(monitored))
+    return json.loads(report_to_json(create_security_report(changes)))
 
 
 def test_report_json_is_valid_deterministic_and_omits_absolute_roots(
@@ -101,6 +132,8 @@ def test_structured_scan_issue_is_sanitized(tmp_path: Path) -> None:
         kind=ScanErrorKind.FILE_ACCESS,
         message="sensitive absolute path details",
         exception_type="PermissionError",
+        errno=13,
+        winerror=5,
     )
     partial = ScanReport(monitored.resolve(), (), (error,), ())
     changes = compare_baseline(baseline, partial)
@@ -116,6 +149,8 @@ def test_structured_scan_issue_is_sanitized(tmp_path: Path) -> None:
         "relative_path": "file.txt",
     }
     assert "sensitive absolute path details" not in text
+    assert "errno" not in text
+    assert "winerror" not in text
 
 
 def test_report_rejects_terminal_control_data_in_exception_type(
@@ -154,6 +189,113 @@ def test_unknown_record_rejects_claimed_current_hash(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidReportError, match="trusted hash"):
         validate_report_data(data)
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["added", "deleted", "modified", "unchanged", "unknown"],
+)
+def test_status_specific_metadata_from_detector_is_valid(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    data = _report_data_for_status(tmp_path, status)
+
+    validated = validate_report_data(data)
+
+    assert getattr(validated, status)[0].status.value == status
+
+
+@pytest.mark.parametrize(
+    ("status", "field", "invalid_value"),
+    [
+        ("added", "previous_size_bytes", 1),
+        ("added", "previous_modified_at_utc", "2026-01-01T00:00:00Z"),
+        ("added", "metadata_changed", True),
+        ("deleted", "current_size_bytes", 1),
+        ("deleted", "current_modified_at_utc", "2026-01-01T00:00:00Z"),
+        ("deleted", "metadata_changed", True),
+        ("modified", "metadata_changed", False),
+        ("unchanged", "metadata_changed", True),
+        ("unknown", "current_size_bytes", 1),
+    ],
+)
+def test_status_specific_contradictory_metadata_is_rejected(
+    tmp_path: Path,
+    status: str,
+    field: str,
+    invalid_value: object,
+) -> None:
+    data = _report_data_for_status(tmp_path, status)
+    record = data["file_changes"][status][0]  # type: ignore[index]
+    if field == "metadata_changed":
+        invalid_value = not record[field]
+    record[field] = invalid_value
+
+    with pytest.raises(InvalidReportError, match="metadata|inconsistent"):
+        validate_report_data(data)
+
+
+def test_untrusted_unknown_requires_observed_current_size(tmp_path: Path) -> None:
+    monitored, baseline, _ = _change_report(tmp_path)
+    scan = scan_directory(monitored)
+    failed = replace(scan.files[0], sha256=None, status=ScanStatus.ERROR)
+    error = ScanError(
+        failed.relative_path,
+        ScanErrorKind.FILE_ACCESS,
+        "not exported",
+        "PermissionError",
+    )
+    changes = compare_baseline(
+        baseline,
+        replace(scan, files=(failed,), errors=(error,)),
+    )
+    data = json.loads(report_to_json(create_security_report(changes)))
+
+    assert validate_report_data(data).unknown[0].current_size_bytes is not None
+    data["file_changes"]["unknown"][0]["current_size_bytes"] = None
+
+    with pytest.raises(InvalidReportError, match="observed metadata"):
+        validate_report_data(data)
+
+
+def test_duplicate_scan_issues_are_rejected(tmp_path: Path) -> None:
+    data = _report_data_for_status(tmp_path, "unknown")
+    data["scan_issues"].append(dict(data["scan_issues"][0]))  # type: ignore[union-attr,index]
+
+    with pytest.raises(InvalidReportError, match="Duplicate scan_issues"):
+        validate_report_data(data)
+
+
+def test_generated_report_collapses_duplicate_sanitized_issues(
+    tmp_path: Path,
+) -> None:
+    monitored, baseline, _ = _change_report(tmp_path)
+    errors = (
+        ScanError(
+            "file.txt",
+            ScanErrorKind.FILE_ACCESS,
+            "first private detail",
+            "PermissionError",
+            errno=13,
+        ),
+        ScanError(
+            "file.txt",
+            ScanErrorKind.FILE_ACCESS,
+            "second private detail",
+            "PermissionError",
+            errno=5,
+        ),
+    )
+    changes = compare_baseline(
+        baseline,
+        ScanReport(monitored.resolve(), (), errors, ()),
+    )
+
+    report = create_security_report(changes, generated_at_utc=_GENERATED_AT)
+
+    assert len(report.scan_issues) == 1
+    assert validate_report_data(json.loads(report_to_json(report))) == report
 
 
 def test_malformed_and_unsupported_reports_are_rejected(tmp_path: Path) -> None:

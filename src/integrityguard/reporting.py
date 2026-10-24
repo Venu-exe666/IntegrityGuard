@@ -155,10 +155,7 @@ def create_security_report(
         modified=_report_files(change_report.modified),
         unchanged=_report_files(change_report.unchanged),
         unknown=_report_files(change_report.unknown),
-        scan_issues=tuple(
-            ReportIssue(error.relative_path, error.kind, error.exception_type)
-            for error in change_report.scan_errors
-        ),
+        scan_issues=_report_issues(change_report),
         baseline_skipped_paths=change_report.baseline_skipped_paths,
         current_skipped_paths=change_report.current_skipped_paths,
         scan_complete=change_report.scan_complete,
@@ -500,27 +497,63 @@ def _validate_report_file(value: object, expected: ChangeStatus) -> ReportFile:
     previous_hash = _validate_optional_hash(value["previous_sha256"])
     current_hash = _validate_optional_hash(value["current_sha256"])
     _validate_hash_semantics(status, previous_hash, current_hash)
+    previous_size = _validate_optional_size(value["previous_size_bytes"])
+    current_size = _validate_optional_size(value["current_size_bytes"])
+    previous_modified = _parse_optional_timestamp(
+        value["previous_modified_at_utc"], "previous_modified_at_utc"
+    )
+    current_modified = _parse_optional_timestamp(
+        value["current_modified_at_utc"], "current_modified_at_utc"
+    )
+    metadata_changed = _validate_bool(
+        value["metadata_changed"], "metadata_changed"
+    )
     unknown_reason = value["unknown_reason"]
     if status is ChangeStatus.UNKNOWN:
         if unknown_reason not in {"scan_error", "skipped_path", "untrusted_result"}:
             raise InvalidReportError("An unknown record needs a valid reason.")
     elif unknown_reason is not None:
         raise InvalidReportError("Only unknown records may have unknown_reason.")
+    _validate_metadata_semantics(
+        status,
+        previous_hash=previous_hash,
+        current_hash=current_hash,
+        previous_size=previous_size,
+        current_size=current_size,
+        previous_modified=previous_modified,
+        current_modified=current_modified,
+        metadata_changed=metadata_changed,
+        unknown_reason=unknown_reason,
+    )
     return ReportFile(
         relative_path=path,
         status=status,
         previous_sha256=previous_hash,
         current_sha256=current_hash,
-        previous_size_bytes=_validate_optional_size(value["previous_size_bytes"]),
-        current_size_bytes=_validate_optional_size(value["current_size_bytes"]),
-        previous_modified_at_utc=_parse_optional_timestamp(
-            value["previous_modified_at_utc"], "previous_modified_at_utc"
-        ),
-        current_modified_at_utc=_parse_optional_timestamp(
-            value["current_modified_at_utc"], "current_modified_at_utc"
-        ),
-        metadata_changed=_validate_bool(value["metadata_changed"], "metadata_changed"),
+        previous_size_bytes=previous_size,
+        current_size_bytes=current_size,
+        previous_modified_at_utc=previous_modified,
+        current_modified_at_utc=current_modified,
+        metadata_changed=metadata_changed,
         unknown_reason=unknown_reason,
+    )
+
+
+def _report_issues(change_report: ChangeReport) -> tuple[ReportIssue, ...]:
+    unique: dict[tuple[str, str, str | None], ReportIssue] = {}
+    for error in change_report.scan_errors:
+        issue = ReportIssue(error.relative_path, error.kind, error.exception_type)
+        key = (_path_key(issue.relative_path), issue.kind.value, issue.exception_type)
+        unique[key] = issue
+    return tuple(
+        sorted(
+            unique.values(),
+            key=lambda issue: (
+                issue.relative_path,
+                issue.kind.value,
+                issue.exception_type or "",
+            ),
+        )
     )
 
 
@@ -543,6 +576,77 @@ def _validate_hash_semantics(
         raise InvalidReportError("An unchanged record has inconsistent hashes.")
     if status is ChangeStatus.UNKNOWN and current is not None:
         raise InvalidReportError("An unknown record cannot contain a trusted hash.")
+
+
+def _validate_metadata_semantics(
+    status: ChangeStatus,
+    *,
+    previous_hash: str | None,
+    current_hash: str | None,
+    previous_size: int | None,
+    current_size: int | None,
+    previous_modified: datetime | None,
+    current_modified: datetime | None,
+    metadata_changed: bool,
+    unknown_reason: object,
+) -> None:
+    previous_exists = previous_hash is not None
+    current_trusted = current_hash is not None
+
+    if previous_exists != (previous_size is not None):
+        raise InvalidReportError("Previous file metadata is inconsistent.")
+    if not previous_exists and previous_modified is not None:
+        raise InvalidReportError("Previous file metadata is inconsistent.")
+    if current_trusted and current_size is None:
+        raise InvalidReportError("Trusted current file metadata is incomplete.")
+
+    if status is ChangeStatus.ADDED:
+        if previous_size is not None or previous_modified is not None:
+            raise InvalidReportError("An added record has previous metadata.")
+        if not current_trusted or current_size is None or metadata_changed:
+            raise InvalidReportError("An added record has inconsistent metadata.")
+        return
+
+    if status is ChangeStatus.DELETED:
+        if current_size is not None or current_modified is not None:
+            raise InvalidReportError("A deleted record has current metadata.")
+        if not previous_exists or metadata_changed:
+            raise InvalidReportError("A deleted record has inconsistent metadata.")
+        return
+
+    if status in {ChangeStatus.MODIFIED, ChangeStatus.UNCHANGED}:
+        if not previous_exists or not current_trusted or current_size is None:
+            raise InvalidReportError("A compared record has incomplete metadata.")
+        expected_changed = (
+            previous_size != current_size
+            or previous_modified != current_modified
+        )
+        if metadata_changed is not expected_changed:
+            raise InvalidReportError("metadata_changed conflicts with file metadata.")
+        return
+
+    if unknown_reason in {"scan_error", "skipped_path"}:
+        if (
+            not previous_exists
+            or current_size is not None
+            or current_modified is not None
+            or metadata_changed
+        ):
+            raise InvalidReportError("A missing-current unknown record is inconsistent.")
+        return
+
+    if unknown_reason == "untrusted_result":
+        if current_size is None:
+            raise InvalidReportError("An untrusted current record needs observed metadata.")
+        expected_changed = previous_exists and (
+            previous_size != current_size
+            or previous_modified != current_modified
+        )
+        if metadata_changed is not expected_changed:
+            raise InvalidReportError("metadata_changed conflicts with unknown metadata.")
+        return
+
+    raise InvalidReportError("An unknown record has inconsistent metadata.")
 
 
 def _validate_issues(value: object) -> tuple[ReportIssue, ...]:
@@ -568,10 +672,20 @@ def _validate_issues(value: object) -> tuple[ReportIssue, ...]:
         issues.append(ReportIssue(path, kind, exception_type))
     expected = sorted(
         issues,
-        key=lambda issue: (issue.relative_path, issue.kind.value),
+        key=lambda issue: (
+            issue.relative_path,
+            issue.kind.value,
+            issue.exception_type or "",
+        ),
     )
     if issues != expected:
         raise InvalidReportError("scan_issues must be sorted.")
+    issue_keys = {
+        (_path_key(issue.relative_path), issue.kind.value, issue.exception_type)
+        for issue in issues
+    }
+    if len(issue_keys) != len(issues):
+        raise InvalidReportError("Duplicate scan_issues are not allowed.")
     return tuple(issues)
 
 

@@ -404,6 +404,88 @@ def test_missing_arguments_use_operational_error_exit_code(
     assert "required" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--max-entries", "0"),
+        ("--max-bytes", "-1"),
+        ("--max-seconds", "nan"),
+    ],
+)
+def test_invalid_scan_limits_use_operational_error_exit_code(
+    option: str,
+    value: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as captured:
+        main(
+            [
+                "scan",
+                "--root",
+                ".",
+                "--baseline",
+                "baseline.json",
+                option,
+                value,
+            ]
+        )
+
+    assert captured.value.code == EXIT_OPERATIONAL_ERROR
+    assert "positive" in capsys.readouterr().err
+
+
+def test_scan_limit_exceeded_returns_inconclusive_exit_code(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monitored, baseline = _initialize(tmp_path)
+    (monitored / "second.txt").write_bytes(b"second")
+    capsys.readouterr()
+
+    code = main(
+        [
+            "scan",
+            "--root",
+            str(monitored),
+            "--baseline",
+            str(baseline),
+            "--max-entries",
+            "1",
+        ]
+    )
+
+    assert code == EXIT_INCONCLUSIVE
+    output = capsys.readouterr().out
+    assert "Assessment conclusive: no" in output
+    assert "ScanLimitExceededError" in output
+
+
+def test_init_limit_exceeded_does_not_create_baseline(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monitored = tmp_path / "monitored"
+    monitored.mkdir()
+    (monitored / "large.bin").write_bytes(b"too large")
+    baseline = tmp_path / "baseline.json"
+
+    code = main(
+        [
+            "init",
+            "--root",
+            str(monitored),
+            "--baseline",
+            str(baseline),
+            "--max-bytes",
+            "1",
+        ]
+    )
+
+    assert code == EXIT_OPERATIONAL_ERROR
+    assert not baseline.exists()
+    assert "containing errors" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("interval", ["invalid", "0", "-1", "nan", "inf"])
 def test_watch_rejects_invalid_intervals(
     interval: str,

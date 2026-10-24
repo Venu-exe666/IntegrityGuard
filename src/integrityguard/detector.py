@@ -375,6 +375,9 @@ def _validate_scan_report(scan_report: ScanReport) -> tuple[FileScanResult, ...]
             raise UnexpectedScannerStateError("Invalid structured scan error.")
         if error.relative_path != ".":
             _validate_relative_path(error.relative_path)
+        for code in (error.errno, error.winerror):
+            if code is not None and (type(code) is not int or code < 0):
+                raise UnexpectedScannerStateError("Invalid structured scan error code.")
 
     return tuple(validated_files)
 

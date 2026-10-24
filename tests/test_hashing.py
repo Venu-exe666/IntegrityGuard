@@ -94,3 +94,15 @@ def test_non_integer_chunk_size_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="must be an integer"):
         sha256_file(target, chunk_size=1.5)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("invalid_chunk_size", [True, False, 1.5, "1024", None])
+def test_bool_and_other_non_integer_chunk_sizes_are_rejected(
+    tmp_path: Path,
+    invalid_chunk_size: object,
+) -> None:
+    target = tmp_path / "content.bin"
+    target.write_bytes(b"content")
+
+    with pytest.raises(TypeError, match="integer"):
+        sha256_file(target, chunk_size=invalid_chunk_size)  # type: ignore[arg-type]

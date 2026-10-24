@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import math
 import os
 import stat
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from os import PathLike
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 from integrityguard.hashing import sha256_stream
 
@@ -22,6 +26,78 @@ class _ObjectChangedError(OSError):
 
 class _UnsupportedIdentityError(OSError):
     """Raised when stable object identity is unavailable for safe binding."""
+
+
+class ScanLimitExceededError(Exception):
+    """Raised internally when a configured scan resource limit is exceeded."""
+
+
+@dataclass(frozen=True, slots=True)
+class ScanLimits:
+    """Optional resource ceilings for one recursive scan."""
+
+    max_entries: int | None = None
+    max_bytes: int | None = None
+    max_duration_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        _validate_optional_positive_int(self.max_entries, "max_entries")
+        _validate_optional_positive_int(self.max_bytes, "max_bytes")
+        value = self.max_duration_seconds
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value <= 0
+        ):
+            raise ValueError("max_duration_seconds must be a finite positive number")
+
+
+@dataclass(slots=True)
+class _ScanState:
+    limits: ScanLimits
+    monotonic: Callable[[], float]
+    deadline: float | None
+    entries_seen: int = 0
+    bytes_hashed: int = 0
+
+    def check_duration(self) -> None:
+        if self.deadline is not None and self.monotonic() >= self.deadline:
+            raise ScanLimitExceededError("The maximum scan duration was exceeded.")
+
+    def record_entry(self) -> None:
+        self.check_duration()
+        self.entries_seen += 1
+        maximum = self.limits.max_entries
+        if maximum is not None and self.entries_seen > maximum:
+            raise ScanLimitExceededError("The maximum scan entry count was exceeded.")
+
+    def ensure_file_fits(self, size_bytes: int) -> None:
+        maximum = self.limits.max_bytes
+        if maximum is not None and self.bytes_hashed + size_bytes > maximum:
+            raise ScanLimitExceededError("The maximum cumulative byte count was exceeded.")
+
+
+class _BoundedScanReader:
+    """Count bytes and check time without taking ownership of the file handle."""
+
+    def __init__(self, source: BinaryIO, state: _ScanState) -> None:
+        self._source = source
+        self._state = state
+
+    def read(self, size: int = -1) -> bytes:
+        self._state.check_duration()
+        maximum = self._state.limits.max_bytes
+        requested = size
+        if maximum is not None:
+            remaining = maximum - self._state.bytes_hashed
+            requested = remaining + 1 if size < 0 else min(size, remaining + 1)
+        data = self._source.read(requested)
+        if maximum is not None and self._state.bytes_hashed + len(data) > maximum:
+            raise ScanLimitExceededError("The maximum cumulative byte count was exceeded.")
+        self._state.bytes_hashed += len(data)
+        self._state.check_duration()
+        return data
 
 
 class ScanStatus(StrEnum):
@@ -64,6 +140,8 @@ class ScanError:
     kind: ScanErrorKind
     message: str
     exception_type: str | None = None
+    errno: int | None = None
+    winerror: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +154,12 @@ class ScanReport:
     skipped_paths: tuple[str, ...]
 
 
-def scan_directory(directory: str | PathLike[str]) -> ScanReport:
+def scan_directory(
+    directory: str | PathLike[str],
+    *,
+    limits: ScanLimits | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> ScanReport:
     """Recursively hash regular files below ``directory`` without writing.
 
     Relative paths use forward slashes on every operating system. Discovered
@@ -89,6 +172,20 @@ def scan_directory(directory: str | PathLike[str]) -> ScanReport:
     instead of raising their filesystem exceptions.
     """
     root = Path(os.path.abspath(os.fspath(directory)))
+    if limits is not None and not isinstance(limits, ScanLimits):
+        raise TypeError("limits must be a ScanLimits instance or None")
+    if not callable(monotonic):
+        raise TypeError("monotonic must be callable")
+    active_limits = limits or ScanLimits()
+    started = float(monotonic())
+    if not math.isfinite(started):
+        raise ValueError("monotonic must return a finite number")
+    duration = active_limits.max_duration_seconds
+    state = _ScanState(
+        limits=active_limits,
+        monotonic=monotonic,
+        deadline=None if duration is None else started + float(duration),
+    )
     files: list[FileScanResult] = []
     errors: list[ScanError] = []
     skipped_paths: list[str] = []
@@ -144,10 +241,20 @@ def scan_directory(directory: str | PathLike[str]) -> ScanReport:
             None,
             None,
             opened_root,
+            state,
             visited_directories,
             files,
             errors,
             skipped_paths,
+        )
+    except ScanLimitExceededError as error:
+        errors.append(
+            ScanError(
+                relative_path=".",
+                kind=ScanErrorKind.DIRECTORY_ACCESS,
+                message=str(error),
+                exception_type=type(error).__name__,
+            )
         )
     finally:
         os.close(root_descriptor)
@@ -161,17 +268,18 @@ def _scan_tree(
     parent_descriptor: int | None,
     directory_name: str | None,
     opened_directory: os.stat_result,
+    state: _ScanState,
     visited_directories: set[tuple[int, int]],
     files: list[FileScanResult],
     errors: list[ScanError],
     skipped_paths: list[str],
 ) -> None:
+    state.check_duration()
     try:
         scan_target: int | Path = (
             directory_descriptor if os.name != "nt" else directory
         )
-        with os.scandir(scan_target) as iterator:
-            entry_names = sorted(entry.name for entry in iterator)
+        entry_names = _read_entry_names(scan_target, state)
     except OSError as error:
         errors.append(
             _scan_error(
@@ -183,6 +291,7 @@ def _scan_tree(
         return
 
     for entry_name in entry_names:
+        state.check_duration()
         entry_path = directory / entry_name
         relative_path = _relative_path(root, entry_path)
 
@@ -231,6 +340,7 @@ def _scan_tree(
                     directory_descriptor,
                     entry_name,
                     opened_child,
+                    state,
                     visited_directories,
                     files,
                     errors,
@@ -243,6 +353,7 @@ def _scan_tree(
                 entry_path,
                 relative_path,
                 entry_info,
+                state,
                 parent_descriptor=directory_descriptor,
                 entry_name=entry_name,
             )
@@ -277,12 +388,15 @@ def _scan_file(
     path: Path,
     relative_path: str,
     before: os.stat_result,
+    state: _ScanState,
     *,
     parent_descriptor: int,
     entry_name: str,
 ) -> tuple[FileScanResult, ScanError | None]:
     size_bytes = before.st_size
     modified_at = _modified_at_utc(before)
+    state.check_duration()
+    state.ensure_file_fits(size_bytes)
 
     descriptor = -1
     try:
@@ -295,7 +409,8 @@ def _scan_file(
         opened_before = os.fstat(descriptor)
         with os.fdopen(descriptor, "rb") as file_handle:
             descriptor = -1
-            digest = sha256_stream(file_handle)
+            bounded_reader = _BoundedScanReader(file_handle, state)
+            digest = sha256_stream(bounded_reader)  # type: ignore[arg-type]
             opened_after = os.fstat(file_handle.fileno())
             try:
                 named_after = _entry_stat(parent_descriptor, path, entry_name)
@@ -345,6 +460,24 @@ def _scan_file(
         ),
         None,
     )
+
+
+def _read_entry_names(
+    scan_target: int | Path,
+    state: _ScanState,
+) -> list[str]:
+    names: list[str] = []
+    with os.scandir(scan_target) as iterator:
+        for entry in iterator:
+            state.record_entry()
+            names.append(entry.name)
+    names.sort()
+    return names
+
+
+def _validate_optional_positive_int(value: object, field_name: str) -> None:
+    if value is not None and (type(value) is not int or value <= 0):
+        raise ValueError(f"{field_name} must be a positive integer or None")
 
 
 def _changed_file_result(
@@ -597,7 +730,13 @@ def _scan_error(
         kind=kind,
         message=str(error),
         exception_type=type(error).__name__,
+        errno=_safe_error_code(getattr(error, "errno", None)),
+        winerror=_safe_error_code(getattr(error, "winerror", None)),
     )
+
+
+def _safe_error_code(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
 
 
 def _build_report(

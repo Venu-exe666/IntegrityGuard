@@ -10,6 +10,14 @@ from pathlib import Path
 DEFAULT_CHUNK_SIZE = 64 * 1024
 
 
+def _validate_chunk_size(chunk_size: object) -> int:
+    if type(chunk_size) is not int:
+        raise TypeError("chunk_size must be an integer")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+    return chunk_size
+
+
 def sha256_stream(
     file_handle: BinaryIO,
     *,
@@ -21,13 +29,10 @@ def sha256_stream(
     Keeping pathname policy outside this function lets security-sensitive
     callers bind validation and hashing to the same filesystem object.
     """
-    if not isinstance(chunk_size, int):
-        raise TypeError("chunk_size must be an integer")
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be greater than zero")
+    validated_chunk_size = _validate_chunk_size(chunk_size)
 
     digest = hashlib.sha256()
-    while chunk := file_handle.read(chunk_size):
+    while chunk := file_handle.read(validated_chunk_size):
         digest.update(chunk)
     return digest.hexdigest()
 
@@ -57,7 +62,8 @@ def sha256_file(
             subclasses such as ``FileNotFoundError`` and ``PermissionError``
             are preserved. No partial digest is returned when this occurs.
     """
+    validated_chunk_size = _validate_chunk_size(chunk_size)
     path = Path(file_path)
 
     with path.open("rb") as file_handle:
-        return sha256_stream(file_handle, chunk_size=chunk_size)
+        return sha256_stream(file_handle, chunk_size=validated_chunk_size)
